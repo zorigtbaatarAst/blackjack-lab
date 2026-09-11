@@ -1,6 +1,6 @@
 # Spec: Train plays the hand out
 
-Status: ready-for-agent
+Status: done
 
 Vocabulary follows `CONTEXT.md`. Builds on `.scratch/blackjack-lab/spec.md` (v1). It is sub-project 3 of 4 from the 2026-09-11 brainstorm: 1 Auto bet and 2 Starting chips are done; 4 Card counting comes after this and reuses its hand-dealing.
 

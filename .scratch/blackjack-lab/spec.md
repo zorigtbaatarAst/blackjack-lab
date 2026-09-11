@@ -246,6 +246,7 @@ Pairs:
   - Auto-stand Hands and split aces involve no Decision.
 - **The Hint exists only in Play.** Drills have no Hint, which protects the Streak.
 - **Weighted drill:**
+  - Since sub-project 3, every Drill plays a whole Training hand from this start: see `.scratch/train-full-hands/spec.md`.
   - Picks a Chart cell by weight. The rows 8-or-less, hard 17-or-more, soft 19 and soft 20 are excluded. Close calls weigh 3×, and all other cells 1×.
   - The chosen cell is then realised as concrete cards, with random suits and a random ten-value rank for a 10. Pair cells are always two cards. Other cells are two cards about 85% of the time and three or more cards about 15% of the time, when possible. Multi-card Situations never allow Double or Split.
   - A realised Hard or Soft cell is never accidentally a Pair.
