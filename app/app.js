@@ -822,6 +822,10 @@ function heatLevel(mistakeRate) {
   return 4
 }
 
+// Each cell wears its Book action's colour (the same as the buttons), so the chart reads as a real
+// strategy chart from the first launch. Unplayed cells are faded; a white ring marks Mistakes, thicker = more often.
+const CODE_CLASS = { H: 'hit', S: 'stand', D: 'double', Ds: 'double-stand', P: 'split' }
+
 function chartHtml(cells) {
   const head = `<div class="hm-row hm-head"><span></span>${UPCARDS.map((up) => `<span>${up}</span>`).join('')}</div>`
   let group = null
@@ -832,22 +836,28 @@ function chartHtml(cells) {
       const up = UPCARDS[col]
       const cell = cells[row.cells[col]]
       const vars = { row: rowTitle(row), up, action: actionName(ACTION_OF_CODE[code]) }
-      const level = cell ? heatLevel(1 - cell.correct / cell.total) : 'none'
+      const state = cell ? `miss-${heatLevel(1 - cell.correct / cell.total)}` : 'unplayed'
       const label = cell ? t('chartCell', { ...vars, correct: cell.correct, total: cell.total }) : t('chartCellEmpty', vars)
-      return `<span class="hm-cell hm-${level}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
+      return `<span class="hm-cell act-${CODE_CLASS[code]} ${state}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
     })
     return `${heading}<div class="hm-row"><span class="hm-label">${rowLabel(row.id)}</span>${cellsHtml.join('')}</div>`
   })
-  const legendSteps = [0, 1, 2, 3, 4].map((level) => `<span class="hm-cell hm-${level}"></span>`).join('')
-  const codes = ['H', 'S', 'D', 'P'].map((code) => `<b>${code}</b> ${actionName(ACTION_OF_CODE[code])}`).join(' · ')
+  const swatch = (code, name) => `<span class="legend-item"><span class="hm-cell act-${CODE_CLASS[code]}">${code}</span> ${name}</span>`
+  const actions = [
+    swatch('H', actionName('hit')),
+    swatch('S', actionName('stand')),
+    swatch('D', actionName('double')),
+    swatch('Ds', `${actionName('double')} / ${actionName('stand')}`),
+    swatch('P', actionName('split')),
+  ]
   return `<h2>${t('chartTitle')}</h2>
     <p class="muted small">${t('chartNote')}</p>
     <div class="heatmap">${head}${rows.join('')}</div>
+    <div class="legend small">${actions.join('')}</div>
     <div class="legend small">
-      <span class="legend-item"><span class="hm-cell hm-none"></span> ${t('chartNoData')}</span>
-      <span class="legend-item">${t('chartScale')} 0% ${legendSteps} 100%</span>
-    </div>
-    <p class="muted small">${codes} · <b>Ds</b> ${actionName('double')} / ${actionName('stand')}</p>`
+      <span class="legend-item"><span class="hm-cell act-hit unplayed"></span> ${t('chartNew')}</span>
+      <span class="legend-item"><span class="hm-cell act-hit miss-1"></span><span class="hm-cell act-hit miss-4"></span> ${t('chartRing')}</span>
+    </div>`
 }
 
 function miniCard(rank) {

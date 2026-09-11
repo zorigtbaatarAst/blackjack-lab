@@ -96,7 +96,7 @@ The app opens straight onto the table, follows Usion's theme and language (Engli
 54. As a player, I want accuracy split into Hard totals, Soft totals and Pairs, so that I know which area to practise.
 55. As a player, I want my last 50 Mistakes listed with the Situation, my Action, the Book action and where it happened (Play, Weighted drill or Mistakes drill), so that I can review specific errors.
 56. As a player, I want Play stats (Hands played, wins, losses, Pushes and net Chips, not counting Refills), so that I can see how I'm doing at the table.
-57. As a player, I want a heat-map of all 280 Chart cells, coloured by my accuracy, with the Book action in each cell and cells I've never played shown neutral, so that I can see my weak spots at a glance.
+57. As a player, I want the Strategy chart of all 280 cells coloured by Book action, with cells I've never played faded and a ring marking where I make Mistakes, so that it works as a strategy chart from day one and shows my weak spots at a glance.
 58. As a new player, I want a helpful empty state in Improve before I've made any Decisions, so that the tab doesn't look broken.
 59. As a player, I want a Reset stats button with a confirmation step, so that I can start my record over without losing my Chips, Streak or rank.
 
@@ -300,7 +300,11 @@ Pairs:
   - Body: the Situation (Upcard plus Hand) and the allowed Action buttons.
   - Feedback: a correct answer auto-advances; a Mistake shows the Book action, the Rule of thumb and a Next button.
   - The Mistakes drill has an empty state.
-- **Improve screen:** accuracy (overall and by category), recent Mistakes, Play stats, the heat-map (28×10, coloured by accuracy, Book code in each cell, neutral when there's no data), the leaderboard section, and Reset stats with a confirmation.
+- **Improve screen:** accuracy (overall and by category), recent Mistakes, Play stats, the Strategy chart (28×10), the leaderboard section, and Reset stats with a confirmation. Chart cells:
+  - Each cell is filled with its Book action's colour, the same colours as the Action buttons (Hit green, Stand magenta, Double yellow, Split blue). Ds cells are split diagonally, Double / Stand.
+  - Cells never played are faded.
+  - A white ring marks Mistakes: 1.5 px up to a 25% Mistake rate, rising to 4.5 px above 75%.
+  - The colours are the dataviz validator's green/magenta/yellow/blue set. It passes all-pairs in both themes, with the letter in every cell as the required secondary encoding. Red and green, the usual Stand/Hit colours, failed the colour-blind check.
 - **Loading, empty and error states:** a brief loading state while the snapshot loads, empty states in Improve and the Mistakes drill, and the save/load notices described above.
 - **i18n:** one strings table with English and Mongolian, covering every UI string and every Rule of thumb. The engine returns ids, never text.
 

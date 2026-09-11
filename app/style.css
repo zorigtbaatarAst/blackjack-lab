@@ -30,11 +30,27 @@
   --gold-deep: #c28b1c;
   --gold-ink: #2b1d00;
 
-  /* Actions: white text on each passes 4.5:1, Double carries dark text */
-  --hit: #17803f;
-  --stand: #c0392b;
-  --double: #f0a92e;
+  /* Actions: one colour-blind-safe set shared by the buttons and the chart (dataviz validator,
+     all pairs, both modes: green / magenta / yellow / blue). Red vs green failed for deutan viewers.
+     Buttons keep these steps in both themes; each ink passes 4.5:1 on its colour. */
+  --hit: #008300;
+  --hit-ink: #ffffff;
+  --stand: #e87ba4;
+  --stand-ink: #1d1d1f;
+  --double: #eda100;
+  --double-ink: #2b1d00;
   --split: #1f6fd1;
+  --split-ink: #ffffff;
+  /* The chart's cells: the validated steps for the page's surface (dark steps below). */
+  --act-hit: #008300;
+  --act-hit-ink: #ffffff;
+  --act-stand: #e87ba4;
+  --act-stand-ink: #1d1d1f;
+  --act-double: #eda100;
+  --act-double-ink: #2b1d00;
+  --act-split: #2a78d6;
+  --act-split-ink: #ffffff;
+  --unplayed-opacity: 0.38; /* pastel on a light page */
 
   /* Casino chip colours */
   --chip-10: #2463d6;
@@ -52,14 +68,6 @@
   --card-w: clamp(46px, min(15vw, 10.5vh), 112px);
   --control-h: 52px; /* Clear/Rebet/Deal, the Actions and Next all share it */
 
-  /* Heat-map: one hue, light → dark = more mistakes (validated reference ramp). */
-  --hm-0: #cde2fb;
-  --hm-1: #86b6ef;
-  --hm-2: #3987e5;
-  --hm-3: #1c5cab;
-  --hm-4: #0d366b;
-  --hm-ink-low: #0b0b0b;
-  --hm-ink-high: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -80,14 +88,11 @@
     --good-tint: #0f2619;
     --bad-tint: #2b1412;
     --hint-tint: #2a220e;
-    /* Dark mode steps its own way: few mistakes recede into the dark surface. */
-    --hm-0: #0d366b;
-    --hm-1: #1c5cab;
-    --hm-2: #2a78d6;
-    --hm-3: #6da7ec;
-    --hm-4: #b7d3f6;
-    --hm-ink-low: #ffffff;
-    --hm-ink-high: #0b0b0b;
+    --act-stand: #d55181;
+    --act-double: #c98500;
+    --act-split: #3987e5;
+    --act-split-ink: #0b0b0b;
+    --unplayed-opacity: 0.55; /* dark colours need more to stay readable */
   }
 }
 
@@ -108,13 +113,11 @@
   --good-tint: #0f2619;
   --bad-tint: #2b1412;
   --hint-tint: #2a220e;
-  --hm-0: #0d366b;
-  --hm-1: #1c5cab;
-  --hm-2: #2a78d6;
-  --hm-3: #6da7ec;
-  --hm-4: #b7d3f6;
-  --hm-ink-low: #ffffff;
-  --hm-ink-high: #0b0b0b;
+  --act-stand: #d55181;
+  --act-double: #c98500;
+  --act-split: #3987e5;
+  --act-split-ink: #0b0b0b;
+  --unplayed-opacity: 0.55;
 }
 
 /* A game is not a web page: no selection, callouts, tap flashes, double-tap zoom or rubber-band. */
@@ -359,16 +362,19 @@ button.wide {
 }
 .actions [data-action='hit'] {
   --action: var(--hit);
+  color: var(--hit-ink);
 }
 .actions [data-action='stand'] {
   --action: var(--stand);
+  color: var(--stand-ink);
 }
 .actions [data-action='double'] {
   --action: var(--double);
-  color: var(--gold-ink);
+  color: var(--double-ink);
 }
 .actions [data-action='split'] {
   --action: var(--split);
+  color: var(--split-ink);
 }
 .actions button:not(:disabled):active {
   transform: translateY(2px);
@@ -776,29 +782,42 @@ button.wide {
   font-size: 10px;
   font-weight: 700;
 }
-.hm-none {
-  border: 1px dashed var(--line);
-  color: var(--muted);
+.hm-cell.act-hit {
+  background: var(--act-hit);
+  color: var(--act-hit-ink);
 }
-.hm-0 {
-  background: var(--hm-0);
-  color: var(--hm-ink-low);
+.hm-cell.act-stand {
+  background: var(--act-stand);
+  color: var(--act-stand-ink);
 }
-.hm-1 {
-  background: var(--hm-1);
-  color: var(--hm-ink-low);
+.hm-cell.act-double {
+  background: var(--act-double);
+  color: var(--act-double-ink);
 }
-.hm-2 {
-  background: var(--hm-2);
-  color: var(--hm-ink-low);
+.hm-cell.act-double-stand {
+  /* "double, else stand": both colours, split on the diagonal */
+  background: linear-gradient(135deg, var(--act-double) 50%, var(--act-stand) 50%);
+  color: var(--act-double-ink);
 }
-.hm-3 {
-  background: var(--hm-3);
-  color: var(--hm-ink-high);
+.hm-cell.act-split {
+  background: var(--act-split);
+  color: var(--act-split-ink);
 }
-.hm-4 {
-  background: var(--hm-4);
-  color: var(--hm-ink-high);
+.hm-cell.unplayed {
+  opacity: var(--unplayed-opacity); /* lights up once you've played the cell */
+}
+/* Mistakes: a white ring, thicker the more often you miss the cell (1: up to 25% … 4: over 75%). */
+.hm-cell.miss-1 {
+  box-shadow: inset 0 0 0 1.5px #fff, 0 0 0 1px rgb(0 0 0 / 0.35);
+}
+.hm-cell.miss-2 {
+  box-shadow: inset 0 0 0 2.5px #fff, 0 0 0 1px rgb(0 0 0 / 0.35);
+}
+.hm-cell.miss-3 {
+  box-shadow: inset 0 0 0 3.5px #fff, 0 0 0 1px rgb(0 0 0 / 0.35);
+}
+.hm-cell.miss-4 {
+  box-shadow: inset 0 0 0 4.5px #fff, 0 0 0 1px rgb(0 0 0 / 0.35);
 }
 .legend {
   display: flex;
@@ -811,10 +830,13 @@ button.wide {
   align-items: center;
   gap: 3px;
 }
+.legend {
+  margin-top: 6px;
+}
 .legend .hm-cell {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
+  display: inline-flex;
+  width: 28px;
+  height: 18px;
 }
 
 .board,
