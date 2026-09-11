@@ -1275,17 +1275,33 @@ function improveScreen() {
     <section class="block">${chartHtml(stats.cells)}</section>
     <section class="block">${mistakesHtml(stats.mistakes)}</section>
     <section class="block">${playStatsHtml(stats.play)}</section>
+    <section class="block">${countingHtml()}</section>
     <div class="reset-row">
       <button data-do="bankrollAsk" data-k="new-bankroll" ${state.round?.phase === 'player' ? `disabled title="${t('finishRoundFirst')}"` : ''}>${t('newBankroll')}</button>
       <button class="danger" data-do="resetAsk" data-k="reset">${t('resetStats')}</button>
     </div>`
 }
 
+function accuracyTile(key, tally) {
+  return `<div class="tile"><span class="label">${t(key)}</span><strong>${pct(tally)}</strong><span class="muted small">${t('ofDecisions', tally)}</span></div>`
+}
+
 function accuracyHtml(accuracy) {
-  const tile = (key, tally) =>
-    `<div class="tile"><span class="label">${t(key)}</span><strong>${pct(tally)}</strong><span class="muted small">${t('ofDecisions', tally)}</span></div>`
   return `<div class="hero">${pct(accuracy.overall)}<span class="muted small">${t('ofDecisions', accuracy.overall)}</span></div>
-    <div class="tiles">${tile('group.hard', accuracy.hard)}${tile('group.soft', accuracy.soft)}${tile('group.pairs', accuracy.pairs)}</div>`
+    <div class="tiles">${accuracyTile('group.hard', accuracy.hard)}${accuracyTile('group.soft', accuracy.soft)}${accuracyTile('group.pairs', accuracy.pairs)}</div>`
+}
+
+// Counting progress: the Best sprint, then each counting skill's accuracy.
+function countingHtml() {
+  const { counting } = state.stats
+  return `<h2>${t('countingTitle')}</h2>
+    <div class="tiles">
+      <div class="tile"><span class="label">${t('bestSprint')}</span><strong>${fmt(state.sprintBest)}</strong><span class="muted small">${t('sprintUnit')}</span></div>
+      ${accuracyTile('countValues', counting.values)}
+      ${accuracyTile('label.runningCount', counting.runningCount)}
+      ${accuracyTile('label.trueCount', counting.trueCount)}
+      ${accuracyTile('label.bet', counting.bet)}
+    </div>`
 }
 
 function boardHtml() {

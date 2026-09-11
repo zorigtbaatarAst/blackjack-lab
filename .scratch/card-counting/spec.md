@@ -1,6 +1,6 @@
 # Spec: Card counting in Train
 
-Status: ready-for-agent
+Status: done
 
 Vocabulary follows `CONTEXT.md` (see its Counting section). Builds on `.scratch/blackjack-lab/spec.md` (v1) and `.scratch/train-full-hands/spec.md` (sub-project 3), whose table functions it reuses. It is sub-project 4 of 4 from the 2026-09-11 brainstorm. Multiplayer stays a future, separate project.
 
