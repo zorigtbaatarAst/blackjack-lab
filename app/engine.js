@@ -85,9 +85,9 @@ function draw(table) {
 
 // ------------------------------------------------------------------ lab
 
-export function newLab(saved, { rng, cards = [] } = {}) {
+export function newLab(saved, { rng, cards = [], trainingCards = [] } = {}) {
   if (typeof rng !== 'function') throw new Error('newLab: rng function required')
-  const { openSituation, ...progress } = saved == null ? freshProgress() : restore(saved)
+  const { openHand, openStart, ...progress } = saved == null ? freshProgress() : restore(saved)
   // Same rule as Settlement: a Bankroll that can't cover the minimum is Refilled, never left stuck.
   if (progress.bankroll < MIN_BET) progress.bankroll = progress.startingChips
   const s = {
@@ -96,11 +96,17 @@ export function newLab(saved, { rng, cards = [] } = {}) {
     shoe: newShoe(rng, cards),
     pendingBet: 0,
     round: null,
-    // An unanswered Weighted-drill Situation comes back after a reload, just as it does after a mode switch.
-    drill: openSituation ? { mode: 'weighted', slots: { weighted: { situation: openSituation, feedback: null } } } : null,
+    drill: null,
+    trainingCards, // stacks the first Training Shoe (tests); consumed by newTrainingSlot
     coachFlag: null,
     refilled: false,
     streakEnded: null,
+  }
+  // An unfinished Weighted hand comes back after a reload, just as it does after a mode switch.
+  if (openHand || openStart) {
+    const slot = newTrainingSlot(s)
+    slot.round = openHand ? resumedRound(openHand) : trainingRound(slot, openStart)
+    s.drill = { mode: 'weighted', slots: { weighted: slot } }
   }
   s.pendingBet = prefillBet(s)
   return derive(s)
@@ -115,7 +121,8 @@ function freshProgress() {
     streak: 0,
     bestStreak: 0,
     stats: emptyStats(),
-    openSituation: null,
+    openHand: null,
+    openStart: null,
   }
 }
 
@@ -157,8 +164,11 @@ function restore(saved) {
   }
   const play = stats.play
   if (!['hands', 'wins', 'losses', 'pushes'].every((k) => isCount(play?.[k])) || !Number.isFinite(play.net)) fail('stats.play')
-  const openSituation = saved.openSituation ?? null
-  if (openSituation !== null && !isRealSituation(openSituation)) fail(`open situation ${JSON.stringify(openSituation)}`)
+  const openHand = saved.openHand ?? null
+  if (openHand !== null && !isResumableHand(openHand)) fail(`open hand ${JSON.stringify(openHand)}`)
+  // The first deployed build saved an open Situation instead; it restarts as a hand from that Situation.
+  const legacy = saved.openSituation ?? null
+  if (legacy !== null && !isRealSituation(legacy)) fail(`open situation ${JSON.stringify(legacy)}`)
   return {
     bankroll: saved.bankroll,
     startingChips,
@@ -167,13 +177,54 @@ function restore(saved) {
     streak: saved.streak,
     bestStreak: saved.bestStreak,
     stats: structuredClone(stats),
-    openSituation: structuredClone(openSituation),
+    openHand: structuredClone(openHand),
+    openStart: legacy && { cards: structuredClone(legacy.cards), upcard: structuredClone(legacy.upcard) },
+  }
+}
+
+function isCard(card) {
+  return RANKS.includes(card?.rank) && SUITS.includes(card?.suit)
+}
+
+// A saved unfinished hand: real cards, the dealer's two, 1–4 Hands, and an active Hand still to play.
+function isResumableHand(hand) {
+  const isHand = (h) =>
+    Array.isArray(h?.cards) &&
+    h.cards.length >= 2 &&
+    h.cards.every(isCard) &&
+    [h.fromSplit, h.splitAces, h.done].every((flag) => typeof flag === 'boolean')
+  const { dealer, hands, active } = hand ?? {}
+  return (
+    Array.isArray(dealer) &&
+    dealer.length === 2 &&
+    dealer.every(isCard) &&
+    Array.isArray(hands) &&
+    hands.length >= 1 &&
+    hands.length <= MAX_HANDS &&
+    hands.every(isHand) &&
+    Number.isInteger(active) &&
+    active >= 0 &&
+    active < hands.length &&
+    !hands[active].done &&
+    handTotal(hands[active].cards).total < 21
+  )
+}
+
+function resumedRound({ dealer, hands, active }) {
+  return {
+    phase: 'player',
+    dealer,
+    hands: hands.map((hand) => ({ ...hand, bet: 0 })),
+    active,
+    bet: 0,
+    hinted: false,
+    net: 0,
+    allowed: [],
   }
 }
 
 // Cards the drill could have dealt, and that land in the cell they claim.
 function isRealSituation(situation) {
-  const isCard = (card) => RANKS.includes(card?.rank) && SUITS.includes(card?.suit)
   const { cards, upcard, allowed, cell } = situation
   const wellFormed =
     Array.isArray(cards) &&
@@ -212,13 +263,16 @@ export function snapshot(state) {
     streak: state.streak,
     bestStreak: state.bestStreak,
     stats: state.stats,
-    openSituation: openWeightedSituation(state),
+    openHand: openWeightedHand(state),
   })
 }
 
-function openWeightedSituation(state) {
-  const slot = state.drill?.slots.weighted
-  return slot?.situation && !slot.feedback ? slot.situation : null
+// The Weighted hand still in play (a reload must not skip its Decision). The Training Shoe is not saved.
+function openWeightedHand(state) {
+  const round = state.drill?.slots.weighted?.round
+  if (round?.phase !== 'player') return null
+  const hands = round.hands.map(({ cards, fromSplit, splitAces, done }) => ({ cards, fromSplit, splitAces, done }))
+  return { dealer: round.dealer, hands, active: round.active }
 }
 
 function invalid(reason) {
@@ -296,32 +350,42 @@ const HANDLERS = {
 
   resetStats(s) {
     s.stats = emptyStats()
-    if (s.drill?.slots.mistakes) s.drill.slots.mistakes = dealSituation(s, 'mistakes')
+    const mistakes = s.drill?.slots.mistakes
+    if (mistakes) dealTrainingHand(s, mistakes, 'mistakes')
   },
 
   startDrill(s, { mode }) {
     if (!DRILL_MODES.includes(mode)) invalid(`no ${mode} drill`)
     s.drill ??= { mode, slots: {} }
     s.drill.mode = mode
-    // An unanswered Situation is kept, so switching modes can't skip it.
-    if (!s.drill.slots[mode]?.situation) s.drill.slots[mode] = dealSituation(s, mode)
+    const slot = (s.drill.slots[mode] ??= newTrainingSlot(s))
+    // An unfinished hand is kept, so switching modes can't skip a Decision; an empty slot deals.
+    if (!slot.round) dealTrainingHand(s, slot, mode)
   },
 
   answer(s, { action }) {
     const slot = s.drill?.slots[s.drill.mode]
-    if (!slot?.situation) invalid('no Situation to answer')
-    if (slot.feedback) invalid('Situation already answered')
-    if (!slot.situation.allowed.includes(action)) invalid(`${action} is not allowed in this Situation`)
+    const round = slot?.round
+    if (slot?.feedback) invalid('Decision already answered') // checked first: the answer may have ended the hand
+    if (round?.phase !== 'player') invalid('no Decision to answer')
+    if (!round.allowed.includes(action)) invalid(`${action} is not allowed in this Situation`)
     const { mode } = s.drill
-    const { correct, book } = recordDecision(s, slot.situation, action, mode)
+    const { correct, book } = recordDecision(s, activeSituation(slot), action, mode)
     slot.feedback = { correct, chosen: action, book: book.action, rule: book.rule }
     if (mode === 'weighted') updateStreak(s, correct)
+    // Right or wrong, the hand goes on with the move actually made.
+    ACTIONS[action](s, slot, round.hands[round.active])
+    if (advance(slot)) resolveRound(slot, s.rng)
   },
 
   next(s) {
     const slot = s.drill?.slots[s.drill.mode]
-    if (!slot?.feedback) invalid('answer the Situation before next')
-    s.drill.slots[s.drill.mode] = dealSituation(s, s.drill.mode)
+    if (slot?.round?.phase === 'settled') {
+      dealTrainingHand(s, slot, s.drill.mode)
+      return
+    }
+    if (!slot?.feedback) invalid('answer the Decision before next')
+    slot.feedback = null
   },
 }
 
@@ -496,10 +560,19 @@ function derive(s) {
   }
   s.accuracy = accuracyOf(s.stats.cells)
   if (s.drill) {
+    for (const slot of Object.values(s.drill.slots)) {
+      if (slot.round) slot.round.allowed = slot.round.phase === 'player' ? allowedActions(s, slot) : []
+    }
     const slot = s.drill.slots[s.drill.mode]
-    s.drill.situation = slot?.situation ?? null
+    const round = slot?.round ?? null
+    s.drill.round = round
     s.drill.feedback = slot?.feedback ?? null
-    s.drill.empty = s.drill.mode === 'mistakes' && s.drill.situation === null
+    s.drill.situation = null
+    if (round?.phase === 'player') {
+      const situation = activeSituation(slot)
+      s.drill.situation = { ...situation, cell: bookAction(situation).cell }
+    }
+    s.drill.empty = s.drill.mode === 'mistakes' && round === null
   }
   return s
 }
@@ -637,9 +710,35 @@ const WEIGHTED_CELLS = CHART_ROWS.flatMap((row, r) =>
 )
 const WEIGHT_TOTAL = WEIGHTED_CELLS.reduce((sum, { weight }) => sum + weight, 0)
 
-function dealSituation(s, mode) {
+// Each drill mode has its own training table. Tests stack the first Training Shoe; later ones are plain shuffles.
+function newTrainingSlot(s) {
+  const slot = { round: null, shoe: newShoe(s.rng, s.trainingCards), feedback: null }
+  s.trainingCards = []
+  return slot
+}
+
+// A new Training hand in the slot: the Weighted pick (or a Pending cell) gives the start, the Training Shoe the rest.
+function dealTrainingHand(s, slot, mode) {
+  slot.feedback = null
   const cell = mode === 'weighted' ? pickWeighted(s.rng) : pickPending(s)
-  return { situation: cell ? realise(cell, s.rng) : null, feedback: null }
+  slot.round = cell ? trainingRound(slot, realise(cell, s.rng)) : null
+}
+
+// A Bet-0 Round from a start. The Book assumes the dealer has already peeked, so a hole card that would make a
+// dealer Blackjack is set aside for the next card.
+function trainingRound(table, { cards, upcard }) {
+  let hole = draw(table)
+  while (handTotal([upcard, hole]).total === 21) hole = draw(table)
+  return {
+    phase: 'player',
+    dealer: [upcard, hole],
+    hands: [{ cards, bet: 0, fromSplit: false, splitAces: false, done: false }],
+    active: 0,
+    bet: 0,
+    hinted: false,
+    net: 0,
+    allowed: [],
+  }
 }
 
 function pickWeighted(rng) {

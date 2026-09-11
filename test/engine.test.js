@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { newLab, step, snapshot, bookAction, CHART_ROWS, UPCARDS, STARTING_CHIPS } from '../app/engine.js'
+import { newLab, step, snapshot, bookAction, handTotal, CHART_ROWS, UPCARDS, STARTING_CHIPS } from '../app/engine.js'
 
 // mulberry32: tiny seeded PRNG so shuffles and drills are reproducible.
 function seeded(seed = 1) {
@@ -615,23 +615,6 @@ test('Mistakes-drill and Play Decisions leave the Streak alone', () => {
   assert.equal(s.streak, 4)
 })
 
-test('the Mistakes drill deals only Pending cells and empties once they are fixed', () => {
-  const history = pendingHistory({
-    'H16-10': { total: 1, correct: 0, pending: 2 },
-    'S18-2': { total: 3, correct: 2, pending: 1 },
-    'P9-7': { total: 4, correct: 3, pending: 0 },
-  })
-  let s = run(lab([], history), startDrill('mistakes'))
-  let answers = 0
-  while (!s.drill.empty) {
-    assert.ok(['H16-10', 'S18-2'].includes(s.drill.situation.cell))
-    s = run(s, right(s), next)
-    answers++
-  }
-  assert.equal(answers, 3)
-  assert.equal(s.drill.situation, null)
-})
-
 test('the Mistakes drill is empty without Pending cells', () => {
   const s = run(lab(), startDrill('mistakes'))
   assert.equal(s.drill.empty, true)
@@ -671,39 +654,6 @@ function closeCalls() {
   return set
 }
 
-test('the Weighted drill skips trivial rows, triples Close calls, and deals ~15% multi-card', () => {
-  const close = closeCalls()
-  const counts = new Map()
-  let nonPair = 0
-  let twoCard = 0
-  let s = run(lab(), startDrill('weighted'))
-  for (let i = 0; i < 6000; i++) {
-    const sit = s.drill.situation
-    assert.equal(bookAction(sit).cell, sit.cell, 'realised cards land in their cell')
-    assert.doesNotMatch(sit.cell, /^(H8|H17|S19|S20)-/)
-    counts.set(sit.cell, (counts.get(sit.cell) ?? 0) + 1)
-    if (sit.cell.startsWith('P')) {
-      assert.deepEqual(sit.allowed, ['hit', 'stand', 'double', 'split'])
-    } else {
-      nonPair++
-      if (sit.cards.length === 2) {
-        twoCard++
-        assert.deepEqual(sit.allowed, ['hit', 'stand', 'double'])
-      } else {
-        assert.deepEqual(sit.allowed, ['hit', 'stand'])
-      }
-    }
-    s = run(s, right(s), next)
-  }
-  const candidates = EXPECTED_CHART.filter(([row]) => !/^(H8|H17|S19|S20)$/.test(row))
-    .flatMap(([row]) => UPCARDS.map((up) => `${row}-${up}`))
-  const mean = (cells) => cells.reduce((n, cell) => n + (counts.get(cell) ?? 0), 0) / cells.length
-  const ratio = mean(candidates.filter((c) => close.has(c))) / mean(candidates.filter((c) => !close.has(c)))
-  assert.ok(ratio > 2.5 && ratio < 3.5, `close-call ratio ${ratio}`)
-  const share = twoCard / nonPair
-  assert.ok(share > 0.82 && share < 0.88, `two-card share ${share}`)
-})
-
 // ---------------------------------------------------------------- engine contract
 
 test('step never mutates its input state', () => {
@@ -720,27 +670,6 @@ test('newLab needs an rng, and unknown drill modes throw', () => {
 })
 
 // ---------------------------------------------------------------- review round 2
-
-test('an open Weighted-drill Situation is saved, so a reload cannot skip it', () => {
-  const s = run(lab(), startDrill('weighted'))
-  const snap = snapshot(s)
-  assert.deepEqual(snap.openSituation, s.drill.situation)
-  const back = step(newLab(snap, { rng: seeded(9) }), startDrill('weighted'))
-  assert.deepEqual(back.drill.situation, s.drill.situation)
-})
-
-test('answered and Mistakes-drill Situations are not saved', () => {
-  const s = run(lab(), startDrill('weighted'))
-  assert.equal(snapshot(step(s, right(s))).openSituation, null)
-  const history = pendingHistory({ 'H16-10': { total: 1, correct: 0, pending: 2 } })
-  assert.equal(snapshot(run(lab([], history), startDrill('mistakes'))).openSituation, null)
-})
-
-test('a saved open Situation must really belong to its cell', () => {
-  const snap = snapshot(run(lab(), startDrill('weighted')))
-  const forged = { ...snap, openSituation: { ...snap.openSituation, cell: 'H8-2' } }
-  assert.throws(() => newLab(forged, { rng: seeded() }), /situation/)
-})
 
 test('Settlement records the Bankroll before payouts, so the reveal can show it', () => {
   const doubled = run(lab(['6', '6', '5', '10', '9', '10']), deal, act('double'))
@@ -782,4 +711,166 @@ test('Refill tops up to the chosen starting chips', () => {
 test('older saves without startingChips load as 1,000; unknown amounts are rejected', () => {
   assert.equal(lab([], saved()).startingChips, 1000)
   assert.throws(() => lab([], saved({ startingChips: 777 })), /startingChips/)
+})
+
+// ---------------------------------------------------------------- Training hands
+
+// A training table set up exactly: a save with an open hand, and a stacked Training Shoe for what follows.
+const handSave = (dealer, cards, extra = {}) =>
+  saved({
+    openHand: { dealer: dealer.map(c), hands: [{ cards: cards.map(c), fromSplit: false, splitAces: false, done: false }], active: 0 },
+    ...extra,
+  })
+const trainLab = (dealer, cards, draws = [], extra = {}) =>
+  newLab(handSave(dealer, cards, extra), { rng: seeded(), trainingCards: draws })
+
+// Answers every Decision of the current Training hand by the Book, then deals the next hand.
+function playOutByTheBook(s) {
+  for (;;) {
+    s = step(s, right(s))
+    const over = s.drill.round.phase === 'settled'
+    s = step(s, next)
+    if (over) return s
+  }
+}
+
+test('a correct Hit keeps the training hand going with a new Decision', () => {
+  // Hard 12 vs 2: the Book hits. The 3 makes hard 15 vs 2.
+  let s = run(trainLab(['2', '9'], ['10', '2'], ['3']), startDrill('weighted'), answer('hit'))
+  assert.equal(s.drill.feedback.correct, true)
+  assert.equal(s.drill.round.phase, 'player')
+  assert.deepEqual(s.drill.round.hands[0].cards.map((x) => x.rank), ['10', '2', '3'])
+  s = step(s, next)
+  assert.equal(s.drill.feedback, null)
+  assert.equal(s.drill.situation.cell, 'H15-2')
+})
+
+test('standing ends the hand: the dealer plays and results resolve without touching Chips', () => {
+  // Hard 16 vs 5 stands; dealer 5,10 = 15 draws a 10 and Busts.
+  const before = trainLab(['5', '10'], ['10', '6'], ['10'])
+  const s = run(before, startDrill('weighted'), answer('stand'))
+  assert.equal(s.drill.feedback.correct, true)
+  assert.equal(s.drill.round.phase, 'settled')
+  assert.equal(s.drill.round.hands[0].result, 'win')
+  assert.deepEqual(s.drill.round.dealer.map((x) => x.rank), ['5', '10', '10'])
+  assert.deepEqual([s.bankroll, s.lastBet, s.pendingBet], [before.bankroll, before.lastBet, before.pendingBet])
+  assert.deepEqual(s.stats.play, before.stats.play)
+})
+
+test('a Mistake mid-hand is recorded and the hand goes on with the move actually made', () => {
+  // Hard 13 vs 2: the Book stands. Hitting is a Mistake; the 2 makes 15 and the hand goes on.
+  const s = run(trainLab(['2', '9'], ['10', '3'], ['2']), startDrill('weighted'), answer('hit'))
+  assert.deepEqual([s.drill.feedback.correct, s.drill.feedback.book], [false, 'stand'])
+  assert.deepEqual([s.stats.mistakes[0].cell, s.stats.mistakes[0].source], ['H13-2', 'weighted'])
+  assert.equal(s.drill.round.phase, 'player')
+  assert.equal(handTotal(s.drill.round.hands[0].cards).total, 15)
+})
+
+test('every Decision of a Weighted hand counts toward the Streak', () => {
+  // Hard 12 vs 2: hit (right); the 3 makes 15 vs 2: stand (right). The dealer's 11 draws a 10.
+  const s = run(trainLab(['2', '9'], ['10', '2'], ['3', '10']), startDrill('weighted'), answer('hit'), next, answer('stand'))
+  assert.equal(s.streak, 2)
+  assert.equal(s.drill.round.phase, 'settled')
+})
+
+test('a Split in Train plays both Hands, each Decision graded', () => {
+  // 8,8 vs 6: split. First Hand 8,3 = 11 vs 6: double (one card). Second Hand 8,10 = 18: stand. Dealer 16 draws 5.
+  let s = run(trainLab(['6', '10'], ['8', '8'], ['3', '10', '9', '5']), startDrill('weighted'), answer('split'))
+  assert.equal(s.drill.round.hands.length, 2)
+  s = run(s, next, answer('double'))
+  assert.equal(s.drill.round.hands[0].cards.length, 3)
+  s = run(s, next, answer('stand'))
+  assert.equal(s.drill.round.phase, 'settled')
+  assert.equal(s.streak, 3)
+  assert.equal(s.stats.cells['P8-6'].correct, 1)
+})
+
+test('training hands never start with a dealer Blackjack', () => {
+  // A legacy open Situation (hard 16 vs ace) restarts as a hand; the King that would make Blackjack is set aside.
+  const start = { cards: [c('10'), c('6')], upcard: c('A'), allowed: ['hit', 'stand', 'double'], cell: 'H16-A' }
+  const s = run(newLab(saved({ openSituation: start }), { rng: seeded(), trainingCards: ['K', '5'] }), startDrill('weighted'))
+  assert.deepEqual(s.drill.round.dealer.map((x) => x.rank), ['A', '5'])
+  assert.equal(s.drill.situation.cell, 'H16-A')
+})
+
+test('next needs an answer mid-hand, and deals a new hand once the hand is over', () => {
+  assert.throws(() => step(run(trainLab(['2', '9'], ['10', '2'], ['3']), startDrill('weighted')), next), /answer/)
+  const over = run(trainLab(['10', '8'], ['10', '6']), startDrill('weighted'), answer('stand'))
+  const fresh = step(over, next)
+  assert.equal(fresh.drill.round.phase, 'player')
+  assert.equal(fresh.drill.feedback, null)
+  assert.notDeepEqual(fresh.drill.round.dealer, over.drill.round.dealer)
+})
+
+test('Mistakes-drill hands start from Pending cells and the drill empties once they are fixed', () => {
+  const pending = ['H16-10', 'S18-2']
+  const history = pendingHistory({
+    'H16-10': { total: 1, correct: 0, pending: 2 },
+    'S18-2': { total: 3, correct: 2, pending: 1 },
+    'P9-7': { total: 4, correct: 3, pending: 0 },
+  })
+  let s = run(lab([], history), startDrill('mistakes'))
+  let starts = 0
+  while (!s.drill.empty) {
+    assert.ok(pending.includes(s.drill.situation.cell), `hand started in ${s.drill.situation.cell}`)
+    s = playOutByTheBook(s)
+    starts++
+    assert.ok(starts <= 3, 'more starts than fixes needed')
+  }
+  assert.equal(s.drill.round, null)
+})
+
+test('an open Weighted hand is saved, so a reload brings back the same Decision', () => {
+  const s = run(trainLab(['2', '9'], ['10', '2'], ['3']), startDrill('weighted'), answer('hit'), next)
+  const snap = snapshot(s)
+  assert.deepEqual(snap.openHand.hands[0].cards.map((x) => x.rank), ['10', '2', '3'])
+  const back = step(newLab(snap, { rng: seeded(9) }), startDrill('weighted'))
+  assert.deepEqual(back.drill.situation, s.drill.situation)
+  assert.deepEqual(back.drill.round.dealer, s.drill.round.dealer)
+})
+
+test('finished and Mistakes-drill hands are not saved', () => {
+  const over = run(trainLab(['10', '8'], ['10', '6']), startDrill('weighted'), answer('stand'))
+  assert.equal(snapshot(over).openHand, null)
+  const history = pendingHistory({ 'H16-10': { total: 1, correct: 0, pending: 2 } })
+  assert.equal(snapshot(run(lab([], history), startDrill('mistakes'))).openHand, null)
+})
+
+test('a malformed open hand or a forged legacy Situation is rejected', () => {
+  assert.throws(() => lab([], saved({ openHand: { dealer: [c('10')], hands: [], active: 0 } })), /open hand/)
+  const forged = { cards: [c('10'), c('6')], upcard: c('A'), allowed: ['hit', 'stand', 'double'], cell: 'H8-2' }
+  assert.throws(() => lab([], saved({ openSituation: forged })), /situation/)
+})
+
+test('Weighted hand starts skip trivial rows, triple Close calls, and are ~15% multi-card', () => {
+  const close = closeCalls()
+  const counts = new Map()
+  let nonPair = 0
+  let twoCard = 0
+  let s = run(lab(), startDrill('weighted'))
+  for (let i = 0; i < 6000; i++) {
+    const sit = s.drill.situation
+    assert.equal(bookAction(sit).cell, sit.cell, 'realised cards land in their cell')
+    assert.doesNotMatch(sit.cell, /^(H8|H17|S19|S20)-/)
+    counts.set(sit.cell, (counts.get(sit.cell) ?? 0) + 1)
+    if (sit.cell.startsWith('P')) {
+      assert.deepEqual(sit.allowed, ['hit', 'stand', 'double', 'split'])
+    } else {
+      nonPair++
+      if (sit.cards.length === 2) {
+        twoCard++
+        assert.deepEqual(sit.allowed, ['hit', 'stand', 'double'])
+      } else {
+        assert.deepEqual(sit.allowed, ['hit', 'stand'])
+      }
+    }
+    s = run(s, answer('stand'), next) // end the hand at once; next deals the next start
+  }
+  const candidates = EXPECTED_CHART.filter(([row]) => !/^(H8|H17|S19|S20)$/.test(row))
+    .flatMap(([row]) => UPCARDS.map((up) => `${row}-${up}`))
+  const mean = (cells) => cells.reduce((n, cell) => n + (counts.get(cell) ?? 0), 0) / cells.length
+  const ratio = mean(candidates.filter((x) => close.has(x))) / mean(candidates.filter((x) => !close.has(x)))
+  assert.ok(ratio > 2.5 && ratio < 3.5, `close-call ratio ${ratio}`)
+  const share = twoCard / nonPair
+  assert.ok(share > 0.82 && share < 0.88, `two-card share ${share}`)
 })
