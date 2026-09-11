@@ -13,6 +13,7 @@ Play blackjack, drill basic strategy, learn Hi-Lo card counting, and track your 
 | `app/engine.js` | Every game rule, pure (no DOM, no Usion). The only test seam. |
 | `app/app.js` | Shell: rendering, i18n, Usion SDK, storage, leaderboard. |
 | `app/strings.js` | All UI text, English and Mongolian. |
+| `app/guide.js` | The Tour and the Guide's text, English and Mongolian. |
 | `test/` | `node --test` suites for the engine and the strings. |
 | `scripts/register.sh` | One-time Usion registration. |
 
@@ -46,7 +47,7 @@ The game is live at **https://zorigtbaatarast.github.io/blackjack-lab/** on GitH
    ```sh
    scripts/deploy-pages.sh
    ```
-   It copies only the five public app files into the Pages repo `zorigtbaatarAst/blackjack-lab`, commits them and pushes. Pages updates in about a minute. Docs, tests and token files are never copied.
+   It copies only the six public app files into the Pages repo `zorigtbaatarAst/blackjack-lab`, commits them and pushes. Pages updates in about a minute. Docs, tests and token files are never copied.
 2. **Point Usion at a new URL.** Only needed if the URL changes. This uses the `usion_sk_` token in `token.txt`.
    ```sh
    USION_SERVICE_ID=blackjack-lab-b54b6313 scripts/register.sh https://<new-url>

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Publish app/ to GitHub Pages. The Pages repo holds only the five public app files, never docs,
+# Publish app/ to GitHub Pages. The Pages repo holds only the public app files, never docs,
 # tests or token files; its history is the deploy log. Needs `gh` logged in with repo scope.
 #   Usage: scripts/deploy-pages.sh            (PAGES_REPO overrides the target repo)
 set -euo pipefail
 
 REPO="${PAGES_REPO:-zorigtbaatarAst/blackjack-lab}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FILES=(index.html app.js engine.js strings.js style.css)
+FILES=(index.html app.js engine.js strings.js style.css guide.js)
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
