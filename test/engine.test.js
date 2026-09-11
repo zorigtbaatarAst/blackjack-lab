@@ -565,7 +565,7 @@ test('a Book-matching answer extends the Streak and shows feedback', () => {
   let s = run(lab(), startDrill('weighted'))
   const book = bookAction(s.drill.situation)
   s = step(s, answer(book.action))
-  assert.deepEqual(s.drill.feedback, { correct: true, chosen: book.action, book: book.action, rule: book.rule })
+  assert.deepEqual(s.drill.feedback, { correct: true, chosen: book.action, book: book.action, rule: book.rule, counted: true })
   assert.equal(s.streak, 1)
 })
 
@@ -846,6 +846,66 @@ test('a malformed open hand or a forged legacy Situation is rejected', () => {
   assert.throws(() => lab([], saved({ openHand: { dealer: [c('10')], hands: [], active: 0 } })), /open hand/)
   const forged = { cards: [c('10'), c('6')], upcard: c('A'), allowed: ['hit', 'stand', 'double'], cell: 'H8-2' }
   assert.throws(() => lab([], saved({ openSituation: forged })), /situation/)
+})
+
+// ---------------------------------------------------------------- Looking up
+
+const lookUp = { type: 'lookUp' }
+
+test('a looked-up training hand is graded but not recorded, and the Streak waits', () => {
+  // Hard 12 vs 2: the Book hits; the 3 makes 15 vs 2, where it stands. Hitting again busts on the 10.
+  let s = run(trainLab(['2', '9'], ['10', '2'], ['3', '10'], { streak: 5 }), startDrill('weighted'), lookUp, answer('hit'))
+  assert.deepEqual(s.drill.feedback, { correct: true, chosen: 'hit', book: 'hit', rule: 'hard-12', counted: false })
+  s = run(s, next, answer('hit')) // a Mistake, but not a recorded one
+  assert.deepEqual([s.drill.feedback.correct, s.drill.feedback.counted], [false, false])
+  assert.equal(s.streak, 5)
+  assert.equal(s.streakEnded, null)
+  assert.deepEqual(s.stats.cells, {})
+  assert.deepEqual(s.stats.mistakes, [])
+})
+
+test('after a looked-up hand, the next hand counts again', () => {
+  // Hard 16 vs 10: standing is a Mistake, but this hand was looked up. The next hand is recorded as usual.
+  let s = run(trainLab(['10', '8'], ['10', '6'], [], { streak: 2 }), startDrill('weighted'), lookUp, answer('stand'))
+  assert.equal(s.drill.round.phase, 'settled')
+  assert.equal(s.streak, 2)
+  s = step(s, next)
+  s = step(s, right(s))
+  assert.equal(s.drill.feedback.counted, true)
+  assert.equal(s.streak, 3)
+  assert.equal(Object.values(s.stats.cells).reduce((n, cell) => n + cell.total, 0), 1)
+})
+
+test('looking up during a Play Round keeps its Decisions off the record', () => {
+  // Hard 16 vs 10: standing is a Mistake, but the Round was looked up, so the Coach stays quiet.
+  const s = run(lab(['10', '10', '6', '7']), deal, lookUp, act('stand'))
+  assert.equal(s.coachFlag, null)
+  assert.deepEqual(s.stats.cells, {})
+  assert.equal(s.round.phase, 'settled')
+})
+
+test('looking up with no Decision waiting changes nothing', () => {
+  const fresh = lab()
+  assert.deepEqual(step(fresh, lookUp).round, fresh.round)
+  const over = run(trainLab(['10', '8'], ['10', '6']), startDrill('weighted'), answer('stand'))
+  assert.deepEqual(step(over, lookUp).drill, over.drill)
+})
+
+test('a looked-up open hand stays looked up across a reload', () => {
+  const s = run(trainLab(['2', '9'], ['10', '2'], ['3']), startDrill('weighted'), lookUp)
+  const snap = snapshot(s)
+  assert.equal(snap.openHand.hinted, true)
+  const back = run(newLab(snap, { rng: seeded(9) }), startDrill('weighted'), answer('hit'))
+  assert.equal(back.drill.feedback.counted, false)
+  assert.deepEqual(back.stats.cells, {})
+})
+
+test('an open hand saved before looking up existed counts, and a malformed flag is rejected', () => {
+  const s = run(trainLab(['2', '9'], ['10', '2'], ['3']), startDrill('weighted'), answer('hit')) // handSave has no flag
+  assert.equal(s.drill.feedback.counted, true)
+  const bad = handSave(['2', '9'], ['10', '2'])
+  bad.openHand.hinted = 'yes'
+  assert.throws(() => newLab(bad, { rng: seeded() }), /open hand/)
 })
 
 test('Weighted hand starts skip trivial rows, triple Close calls, and are ~15% multi-card', () => {
