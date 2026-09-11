@@ -79,8 +79,8 @@ function shuffle(cards, rng) {
   }
 }
 
-function draw(s) {
-  return s.shoe.cards[s.shoe.next++]
+function draw(table) {
+  return table.shoe.cards[table.shoe.next++]
 }
 
 // ------------------------------------------------------------------ lab
@@ -277,8 +277,8 @@ const HANDLERS = {
       const { correct, book } = recordDecision(s, activeSituation(s), action, 'play')
       if (!correct) s.coachFlag = { chosen: action, book: book.action, rule: book.rule, cell: book.cell }
     }
-    ACTIONS[action](s, hand)
-    advance(s)
+    ACTIONS[action](s, s, hand)
+    if (advance(s)) settle(s)
   },
 
   newBankroll(s, { chips }) {
@@ -338,8 +338,8 @@ function updateStreak(s, correct) {
   s.streak = 0
 }
 
-function activeSituation(s) {
-  const { round } = s
+function activeSituation(table) {
+  const { round } = table
   return { cards: round.hands[round.active].cards, upcard: round.dealer[0], allowed: round.allowed }
 }
 
@@ -367,27 +367,28 @@ function recordDecision(s, situation, chosen, source) {
   return { correct, book }
 }
 
+// Each Action works on any table (Play's, or a training one). A training Bet is 0, so Double and Split cost nothing.
 const ACTIONS = {
-  hit(s, hand) {
-    hand.cards.push(draw(s))
+  hit(s, table, hand) {
+    hand.cards.push(draw(table))
     if (handTotal(hand.cards).total >= 21) hand.done = true
   },
-  stand(s, hand) {
+  stand(s, table, hand) {
     hand.done = true
   },
-  double(s, hand) {
+  double(s, table, hand) {
     s.bankroll -= hand.bet
     hand.bet *= 2
-    hand.cards.push(draw(s))
+    hand.cards.push(draw(table))
     hand.done = true
   },
-  split(s, hand) {
-    const { round } = s
+  split(s, table, hand) {
+    const { round } = table
     s.bankroll -= hand.bet
     const aces = hand.cards[0].rank === 'A'
     const moved = hand.cards.pop()
-    hand.cards.push(draw(s)) // the first Hand gets its second card first
-    const sibling = { cards: [moved, draw(s)], bet: hand.bet, fromSplit: true, splitAces: aces, done: false }
+    hand.cards.push(draw(table)) // the first Hand gets its second card first
+    const sibling = { cards: [moved, draw(table)], bet: hand.bet, fromSplit: true, splitAces: aces, done: false }
     hand.fromSplit = true
     hand.splitAces = aces
     round.hands.splice(round.active + 1, 0, sibling)
@@ -414,31 +415,41 @@ function prefillBet(s) {
   return s.lastBet <= s.bankroll ? s.lastBet : MIN_BET
 }
 
-function advance(s) {
-  const next = s.round.hands.findIndex((hand) => !hand.done)
+// Moves to the next unfinished Hand. Once there is none, the dealer plays; true means the Round can resolve.
+function advance(table) {
+  const next = table.round.hands.findIndex((hand) => !hand.done)
   if (next >= 0) {
-    s.round.active = next
-    return
+    table.round.active = next
+    return false
   }
-  dealerTurn(s)
-  settle(s)
+  dealerTurn(table)
+  return true
 }
 
-function dealerTurn(s) {
-  const { round } = s
+function dealerTurn(table) {
+  const { round } = table
   if (round.hands.every((hand) => handTotal(hand.cards).total > 21)) return
   // S17: draw below 17, stand on every 17 including soft 17.
-  while (handTotal(round.dealer).total < 17) round.dealer.push(draw(s))
+  while (handTotal(round.dealer).total < 17) round.dealer.push(draw(table))
 }
 
-function settle(s) {
-  const { round, stats } = s
+// Every Hand's result, the Round over, the table's Shoe reshuffled at the Cut card. Chips are Play's business.
+function resolveRound(table, rng) {
+  const { round } = table
   const dealer = handTotal(round.dealer).total
   const dealerBlackjack = round.dealer.length === 2 && dealer === 21
+  for (const hand of round.hands) hand.result = resultOf(hand, dealer, dealerBlackjack)
+  round.phase = 'settled'
+  if (table.shoe.next >= CUT_CARD) table.shoe = newShoe(rng)
+}
+
+// Play's Settlement: resolve the Round, then pay out Chips, table stats, the last Bet and any Refill.
+function settle(s) {
+  resolveRound(s, s.rng)
+  const { round, stats } = s
   let staked = 0
   let returned = 0
   for (const hand of round.hands) {
-    hand.result = resultOf(hand, dealer, dealerBlackjack)
     hand.payout = hand.bet * PAYOUT[hand.result]
     staked += hand.bet
     returned += hand.payout
@@ -452,12 +463,10 @@ function settle(s) {
   s.lastBet = round.bet
   round.net = returned - staked
   stats.play.net += round.net
-  round.phase = 'settled'
   if (s.bankroll < MIN_BET) {
     s.bankroll = s.startingChips
     s.refilled = true
   }
-  if (s.shoe.next >= CUT_CARD) s.shoe = newShoe(s.rng)
   s.pendingBet = prefillBet(s)
 }
 
@@ -479,7 +488,7 @@ function derive(s) {
   s.chipsEnabled = betting ? CHIPS.filter((chip) => s.pendingBet + chip <= betCap(s)) : []
   s.canDeal = betting && s.pendingBet >= MIN_BET && s.pendingBet <= s.bankroll
   s.canRebet = betting && s.lastBet <= s.bankroll
-  if (s.round) s.round.allowed = s.round.phase === 'player' ? allowedActions(s) : []
+  if (s.round) s.round.allowed = s.round.phase === 'player' ? allowedActions(s, s) : []
   s.hintAction = null
   if (s.hint && s.round?.phase === 'player') {
     const { action, rule } = bookAction(activeSituation(s))
@@ -507,11 +516,11 @@ function accuracyOf(cells) {
   return accuracy
 }
 
-function allowedActions(s) {
-  const { round } = s
+function allowedActions(s, table) {
+  const { round } = table
   const hand = round.hands[round.active]
   const allowed = ['hit', 'stand']
-  const affordable = s.bankroll >= hand.bet
+  const affordable = s.bankroll >= hand.bet // always true at a training table's Bet of 0
   if (hand.cards.length === 2 && affordable) allowed.push('double')
   if (isPair(hand.cards) && round.hands.length < MAX_HANDS && affordable) allowed.push('split')
   return allowed
