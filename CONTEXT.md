@@ -74,8 +74,11 @@ The player's current Chip balance.
 The Chips staked on a Hand, between the table minimum (10) and maximum (500).
 _Avoid_: Wager, stake
 
+**Starting chips**:
+The Bankroll the player chose to start with (500, 1,000, 5,000 or 10,000); every Refill tops up to it.
+
 **Refill**:
-Resetting the Bankroll to 1,000 when it falls below the table minimum.
+Resetting the Bankroll to the player's Starting chips when it falls below the table minimum.
 
 **Settlement**:
 Paying out or collecting every Bet in a Round once the dealer's turn ends; the only moment the Bankroll changes durably.
