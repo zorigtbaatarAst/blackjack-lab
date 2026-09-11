@@ -19,11 +19,24 @@ Play blackjack, drill basic strategy, and track your accuracy. It's a solo Usion
 ## Develop
 
 ```sh
-npm test                                              # Node 20+, zero dependencies
-python3 -m http.server 8765 --directory app           # then open http://127.0.0.1:8765
+npm run dev      # http://localhost:8765: edit anything in app/, then refresh the browser
+npm test         # the engine and strings suites (Node 20+, zero dependencies)
 ```
 
-Outside Usion the app runs in **preview mode**, with no saving and no leaderboard. Inside Usion it saves through `Usion.storage`. On desktop: H/S/D/P act, 1–4 add chips, Enter deals or moves to the next Situation, C clears, R rebets, Esc closes dialogs.
+`npm run dev` serves `app/` with a **fake Usion SDK** (`dev/fake-usion-sdk.js`). You get a profile, saving and a leaderboard straight away, with no deploy and no Usion. Saved progress lives in the browser's localStorage, one store per fake user. Change the setup with query params:
+
+| URL | What you get |
+|---|---|
+| `http://localhost:8765/?name=Bat` | Logged in as "Bat" |
+| `?user=guest_1` | A Guest (no leaderboard) |
+| `?lang=mn`, `?theme=dark` | Mongolian, dark theme |
+| `?avatar=https://…` | A profile picture |
+| `?failSet=1` / `?failGet=1` | Save or load failures |
+| `?real=1` | The real SDK, which drops to preview mode after 8 s like any page outside Usion |
+
+To press the host's back button, run `usionBack()` in the browser console. On desktop: H/S/D/P act, 1–4 add chips, Enter deals or moves to the next Situation, C clears, R rebets, Esc closes dialogs.
+
+When it looks right, ship it with `scripts/deploy-pages.sh`, described below.
 
 ## Deploy
 
