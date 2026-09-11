@@ -21,6 +21,7 @@ const ACTIONS = ['hit', 'stand', 'double', 'split']
 const ACTION_KEYS = { hit: 'h', stand: 's', double: 'd', split: 'p' } // desktop shortcuts; Split is P, not S
 const INIT_TIMEOUT_MS = 8000 // the SDK's own recommendation; timing out inside Usion means an unsaved session
 const AUTO_ADVANCE_MS = 600
+const AUTO_DEAL_MS = 1500 // Auto bet: time to read the result before the next Round deals itself
 const REVEAL_MS = 450
 const TOAST_MS = 2600
 const NEW_BEST_CARD_MIN = 5
@@ -50,10 +51,12 @@ const ui = {
   roundSeen: new Set(), // card keys already on screen: only new cards animate in
   drillSeen: new Set(),
   situationSerial: 0,
+  autoBet: false, // re-deal the same Bet after every Round; session-only, never saved
 }
 let revealTimer = null
 let advanceTimer = null
 let toastTimer = null
+let autoDealTimer = null
 let backKey = null
 let lastSavedJson = null
 let saving = false
@@ -258,6 +261,24 @@ function finishReveal() {
     ui.refillPending = false
     showToast(t('refilled', { n: fmt(START_BANKROLL) }))
   }
+  if (!ui.autoBet) return
+  // The engine pre-fills the last Bet, or the table minimum when that's no longer affordable. Auto bet
+  // must never quietly keep playing a different Bet, so it stops instead.
+  if (state.pendingBet !== state.lastBet) {
+    ui.autoBet = false
+    showToast(t('autoStopped'))
+    return
+  }
+  scheduleAutoDeal()
+}
+
+function scheduleAutoDeal() {
+  clearTimeout(autoDealTimer)
+  autoDealTimer = setTimeout(() => {
+    const idle = !state.round || state.round.phase === 'settled'
+    if (!ui.autoBet || ui.tab !== 'play' || ui.overlay || !idle || !state.canDeal) return
+    dispatch({ type: 'deal' })
+  }, AUTO_DEAL_MS)
 }
 
 function scheduleAdvance() {
@@ -296,6 +317,7 @@ function switchTab(tab, { remember = true } = {}) {
     return
   }
   if (tab === 'improve' && canRank && ui.board?.status !== 'ready' && ui.board?.status !== 'loading') loadBoard()
+  if (tab === 'play' && ui.autoBet) scheduleAutoDeal()
   render()
 }
 
@@ -307,6 +329,15 @@ const CLICKS = {
   deal: () => dispatch({ type: 'deal' }),
   act: ({ action }) => dispatch({ type: 'act', action }),
   hint: () => dispatch({ type: 'toggleHint' }),
+  autoBet: () => {
+    ui.autoBet = !ui.autoBet
+    clearTimeout(autoDealTimer)
+    const idle = !state.round || state.round.phase === 'settled'
+    const revealing = state.round?.phase === 'settled' && ui.dealerShown < state.round.dealer.length
+    // Turning it on at an idle table deals right away; mid-Round it takes over after this Round.
+    if (ui.autoBet && idle && !revealing && state.canDeal) dispatch({ type: 'deal' })
+    else render()
+  },
   drillMode: ({ mode }) => dispatch({ type: 'startDrill', mode }),
   answer: ({ action }) => dispatch({ type: 'answer', action }),
   next: () => {
@@ -473,6 +504,7 @@ function keyTargets(key) {
   if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill']
   const chip = { 1: 10, 2: 25, 3: 100, 4: 500 }[key]
   if (chip) return [`chip-${chip}`]
+  if (key === 'a') return ['auto']
   if (key === 'c') return ['clear']
   if (key === 'r') return ['rebet']
   return []
@@ -560,33 +592,51 @@ function actionButtons(doName, allowed, locked = false) {
   return `<div class="actions">${buttons.join('')}</div>`
 }
 
-const FLAG_ICON = { good: '✓', bad: '✗', hint: '💡' }
-
-function flagHtml(kind, title, rule) {
-  const icon = FLAG_ICON[kind]
-  return `<div class="flag ${kind}"><strong>${icon} ${title}</strong>${rule ? `<small>${t(`rule.${rule}`)}</small>` : ''}</div>`
-}
-
 // ------------------------------------------------------------------ Play
 
+// The layout never changes between turns (that made the screen jump): the bet line and chips always
+// stay, only the bottom row swaps between Clear/Rebet/Deal and the Actions, and both are the same height.
 function playScreen() {
   const { round } = state
   const revealing = round?.phase === 'settled' && ui.dealerShown < round.dealer.length
-  let controls = bettingHtml()
-  if (round?.phase === 'player') controls = actionButtons('act', round.allowed)
-  else if (revealing) controls = ''
+  const inRound = round?.phase === 'player'
+  const canBet = !inRound && !revealing
+  const staked = inRound || revealing ? round.hands.reduce((sum, hand) => sum + hand.bet, 0) : state.pendingBet
+  let bottom = bettingRow()
+  if (inRound) bottom = actionButtons('act', round.allowed)
+  else if (revealing) bottom = actionButtons('act', [])
   return `
     <header class="bar">
       <div class="stat muted">${t('cardsLeft', { n: state.cardsLeft })}</div>
-      <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
+      <div class="bar-actions">
+        <button class="toggle" data-do="autoBet" data-k="auto" aria-pressed="${ui.autoBet}">${t('autoBet')}<kbd>A</kbd></button>
+        <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
+      </div>
     </header>
     <section class="table">
       ${dealerHtml(round)}
-      ${feltPrint(t('feltPays'), t('feltRule'))}
-      <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostCards()}</div>
+      ${playMessage(revealing)}
+      <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostHand()}</div>
     </section>
-    <div class="coach">${coachHtml(revealing)}</div>
-    <footer class="controls">${controls}</footer>`
+    <footer class="controls">
+      <div class="bet-line"><span class="label">${t('bet')}</span>${chipStack(staked)}<strong>${fmt(staked)}</strong></div>
+      ${chipTray(canBet)}
+      ${bottom}
+      <p class="keys muted small">${t(inRound ? 'keysAct' : 'keysBet')}</p>
+    </footer>`
+}
+
+// One fixed-height slot on the felt: a mistake, the Hint, or the Round's result; otherwise the print.
+function playMessage(revealing) {
+  const { coachFlag: flag, hintAction: hint, round } = state
+  const net = round?.phase === 'settled' && !revealing ? t('roundNet', { n: signed(round.net) }) : null
+  if (flag) {
+    const title = `✗ ${t('coachMistake', { action: actionName(flag.book) })}${net ? ` · ${net}` : ''}`
+    return feltMessage('bad', title, t(`rule.${flag.rule}`))
+  }
+  if (hint) return feltMessage('hint', `💡 ${t('hintSays', { action: actionName(hint.action) })}`, t(`rule.${hint.rule}`))
+  if (net) return feltMessage('net', net, t('feltPays'))
+  return feltMessage('', t('feltPays'), t('feltRule'))
 }
 
 function dealerHtml(round) {
@@ -608,8 +658,14 @@ function ghostCards() {
   return '<div class="cards" aria-hidden="true"><div class="card ghost"></div><div class="card ghost"></div></div>'
 }
 
-function feltPrint(title, subtitle) {
-  return `<div class="felt-print" aria-hidden="true"><strong>${title}</strong><span>${subtitle}</span></div>`
+// The player's spot before the first Round: same box as a real Hand (cards + info line), so dealing doesn't jump.
+function ghostHand() {
+  return `<div class="hand">${ghostCards()}<div class="meta"></div></div>`
+}
+
+// Screen readers get these messages from the announcer, so the felt copy is hidden from them.
+function feltMessage(kind, title, subtitle) {
+  return `<div class="felt-print${kind ? ` ${kind}` : ''}" aria-hidden="true"><strong>${title}</strong><span>${subtitle}</span></div>`
 }
 
 // The Bet as real chips: greedy from the biggest denomination, capped so a big Bet stays a neat stack.
@@ -636,33 +692,21 @@ function handHtml(hand, i, revealing) {
   </div>`
 }
 
-function coachHtml(revealing) {
-  const parts = []
-  const flag = state.coachFlag
-  if (flag) parts.push(flagHtml('bad', t('coachMistake', { action: actionName(flag.book) }), flag.rule))
-  const hint = state.hintAction
-  if (hint) parts.push(flagHtml('hint', t('hintSays', { action: actionName(hint.action) }), hint.rule))
-  if (state.round?.phase === 'settled' && !revealing) {
-    parts.push(`<div class="round-net">${t('roundNet', { n: signed(state.round.net) })}</div>`)
-  }
-  return parts.join('')
+function chipTray(canBet) {
+  const chips = CHIPS.map((chip) => {
+    const enabled = canBet && state.chipsEnabled.includes(chip)
+    return `<button class="chip chip-${chip}" data-do="bet" data-chip="${chip}" data-k="chip-${chip}" ${enabled ? '' : 'disabled'}>${chip}</button>`
+  })
+  return `<div class="chips">${chips.join('')}</div>`
 }
 
-function bettingHtml() {
-  const chips = CHIPS.map(
-    (chip) =>
-      `<button class="chip chip-${chip}" data-do="bet" data-chip="${chip}" data-k="chip-${chip}" ${state.chipsEnabled.includes(chip) ? '' : 'disabled'}>${chip}</button>`,
-  )
+function bettingRow() {
   const canRebet = state.canRebet && state.pendingBet !== state.lastBet
-  return `
-    <div class="bet-line"><span class="label">${t('bet')}</span>${chipStack(state.pendingBet)}<strong>${fmt(state.pendingBet)}</strong></div>
-    <div class="chips">${chips.join('')}</div>
-    <div class="row">
+  return `<div class="row">
       <button data-do="clearBet" data-k="clear" ${state.pendingBet > 0 ? '' : 'disabled'}>${t('clear')}</button>
       <button data-do="rebet" data-k="rebet" ${canRebet ? '' : 'disabled'}>${t('rebet')}</button>
       <button class="primary" data-do="deal" data-k="deal" ${state.canDeal ? '' : 'disabled'}>${t('deal')}<kbd>↵</kbd></button>
-    </div>
-    <p class="keys muted small">${t('keysPlay')}</p>`
+    </div>`
 }
 
 // ------------------------------------------------------------------ Train
@@ -688,9 +732,9 @@ function trainScreen() {
   const { situation, feedback } = drill
   const up = cardFace(situation.upcard, `up-${ui.situationSerial}`, ui.drillSeen)
   const cards = situation.cards.map((card, i) => cardFace(card, `p${i}-${ui.situationSerial}`, ui.drillSeen))
-  let result = ''
-  if (feedback?.correct) result = flagHtml('good', t('correct'))
-  else if (feedback) result = flagHtml('bad', t('coachMistake', { action: actionName(feedback.book) }), feedback.rule)
+  let message = feltMessage('', t('feltTrain'), t('feltTrainSub'))
+  if (feedback?.correct) message = feltMessage('good', `✓ ${t('correct')}`, t(`rule.${feedback.rule}`))
+  else if (feedback) message = feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}`, t(`rule.${feedback.rule}`))
   const controls =
     feedback && !feedback.correct
       ? `<button class="primary wide" data-do="next" data-k="next">${t('next')}<kbd>↵</kbd></button>`
@@ -698,14 +742,13 @@ function trainScreen() {
   return `${header}
     <section class="table">
       <div class="dealer"><div class="label">${t('dealer')}</div><div class="cards">${up}</div></div>
-      ${feltPrint(t('feltTrain'), t('feltTrainSub'))}
+      ${message}
       <div class="hands"><div class="hand">
         <div class="cards">${cards.join('')}</div>
         <div class="meta">${t('yourHand')} · <strong>${totalLabel(situation.cards)}</strong></div>
       </div></div>
     </section>
-    <div class="coach">${result}</div>
-    <footer class="controls">${controls}</footer>`
+    <footer class="controls">${controls}<p class="keys muted small">${t('keysTrain')}</p></footer>`
 }
 
 // ------------------------------------------------------------------ Improve

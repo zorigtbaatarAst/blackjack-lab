@@ -34,7 +34,7 @@ npm test         # the engine and strings suites (Node 20+, zero dependencies)
 | `?failSet=1` / `?failGet=1` | Save or load failures |
 | `?real=1` | The real SDK, which drops to preview mode after 8 s like any page outside Usion |
 
-To press the host's back button, run `usionBack()` in the browser console. On desktop: H/S/D/P act, 1–4 add chips, Enter deals or moves to the next Situation, C clears, R rebets, Esc closes dialogs.
+To press the host's back button, run `usionBack()` in the browser console. On desktop: H/S/D/P act, 1–4 add chips, Enter deals or moves to the next Situation, C clears, R rebets, A toggles Auto bet (re-deal the same Bet after every Round), Esc closes dialogs.
 
 When it looks right, ship it with `scripts/deploy-pages.sh`, described below.
 

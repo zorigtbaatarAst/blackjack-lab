@@ -50,6 +50,7 @@
   --back-b: #8e1621;
   /* Cards follow the smaller of width and height, so a wide desktop window gets big cards, not a sliver. */
   --card-w: clamp(46px, min(15vw, 10.5vh), 112px);
+  --control-h: 52px; /* Clear/Rebet/Deal, the Actions and Next all share it */
 
   /* Heat-map: one hue, light → dark = more mistakes (validated reference ramp). */
   --hm-0: #cde2fb;
@@ -305,6 +306,10 @@ button.wide {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
+.bar-actions {
+  display: flex;
+  gap: 8px;
+}
 .toggle[aria-pressed='true'] {
   background: var(--gold);
   border-color: var(--gold-deep);
@@ -344,7 +349,7 @@ button.wide {
   gap: 8px;
 }
 .actions button {
-  min-height: 52px;
+  height: var(--control-h);
   padding: 0 4px;
   border: 0;
   background: var(--action);
@@ -378,6 +383,10 @@ button.wide {
   display: grid;
   grid-template-columns: 1fr 1fr 1.4fr;
   gap: 8px;
+}
+.row button,
+.controls .wide {
+  height: var(--control-h);
 }
 .bet-line {
   display: flex;
@@ -476,9 +485,10 @@ button.wide {
   position: relative;
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-around;
+  /* Dealer | message slot | player: equal outer rows pin the slot in the middle whatever the cards do. */
+  display: grid;
+  grid-template-rows: 1fr auto 1fr;
+  align-items: center;
   gap: 10px;
   padding: 14px 10px;
   border-radius: 26px;
@@ -505,6 +515,8 @@ button.wide {
   text-align: center;
 }
 .felt-print {
+  height: 72px; /* fixed: a message appearing must not move the cards */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -526,6 +538,37 @@ button.wide {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.felt-print.bad strong,
+.felt-print.good strong,
+.felt-print.hint strong,
+.felt-print.net strong {
+  font-size: 16px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.felt-print.bad strong {
+  color: #ff9a8f;
+}
+.felt-print.good strong {
+  color: #7dffa9;
+}
+.felt-print.hint strong,
+.felt-print.net strong {
+  color: var(--gold);
+}
+.felt-print.bad span,
+.felt-print.good span,
+.felt-print.hint span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  max-width: 34em;
+  color: var(--felt-ink);
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .cards {
@@ -614,7 +657,9 @@ button.wide {
   box-shadow: 0 0 18px rgb(244 194 79 / 0.35);
 }
 .meta {
+  height: 22px; /* fixed, so the result badge appearing can't nudge the Hand */
   margin-top: 6px;
+  line-height: 22px;
   text-align: center;
   font-size: 13px;
   color: var(--felt-muted);
@@ -624,7 +669,9 @@ button.wide {
 }
 .badge {
   display: inline-block;
-  padding: 1px 9px;
+  line-height: 18px;
+  vertical-align: middle;
+  padding: 0 9px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 800;
@@ -643,55 +690,6 @@ button.wide {
 .badge.push {
   background: rgb(255 255 255 / 0.85);
   color: #1d1d1f;
-}
-
-.coach {
-  min-height: 48px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.flag {
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-left-width: 4px;
-  border-radius: 10px;
-  background: var(--surface);
-}
-.flag strong {
-  display: block;
-}
-.flag small {
-  display: block;
-  margin-top: 2px;
-  color: var(--muted);
-}
-.flag.good {
-  border-left-color: var(--good);
-  background: var(--good-tint);
-}
-.flag.good strong {
-  color: var(--good);
-}
-.flag.bad {
-  border-left-color: var(--bad);
-  background: var(--bad-tint);
-}
-.flag.bad strong {
-  color: var(--bad);
-}
-.flag.hint {
-  border-left-color: var(--gold);
-  background: var(--hint-tint);
-}
-.flag.hint strong {
-  color: var(--hint);
-}
-.round-net {
-  text-align: center;
-  font-weight: 800;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
 }
 
 .empty {
@@ -958,8 +956,10 @@ kbd,
   .profile {
     padding: 12px 24px;
   }
+  :root {
+    --control-h: 58px;
+  }
   .actions button {
-    min-height: 58px;
     font-size: 16px;
   }
   .table {
