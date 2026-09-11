@@ -8,8 +8,8 @@ import {
   ACTION_OF_CODE,
   CHART_ROWS,
   CHIPS,
-  DRILL_MODES,
   STARTING_CHIPS,
+  TRAIN_MODES,
   UPCARDS,
 } from './engine.js'
 import { STRINGS } from './strings.js'
@@ -26,6 +26,15 @@ const AUTO_DEAL_MS = 1500 // Auto bet: time to read the result before the next R
 const REVEAL_MS = 450
 const TOAST_MS = 2600
 const NEW_BEST_CARD_MIN = 5
+const SPRINT_MS = 30000
+const MISS_PAUSE_MS = 600 // a missed card shows its right value this long, and taps are ignored meanwhile
+const VALUE_BUTTONS = [
+  { value: -1, k: 'value-minus', key: '←' },
+  { value: 0, k: 'value-zero', key: '↓' },
+  { value: 1, k: 'value-plus', key: '→' },
+]
+// ponytail: the Count tab arrives with its screen in Task 4, which deletes this line.
+const SHOWN_MODES = TRAIN_MODES.filter((mode) => mode !== 'count')
 const SUIT_GLYPH = { s: '♠', h: '♥', d: '♦', c: '♣' }
 
 const app = document.getElementById('app')
@@ -54,11 +63,17 @@ const ui = {
   situationSerial: 0,
   advanceToken: 0, // invalidates a pending auto-advance when anything else happens first
   autoBet: false, // re-deal the same Bet after every Round; session-only, never saved
+  valuesSeen: new Set(),
+  valuesSerial: 0,
+  sprintEndsAt: null, // the sprint clock, while one is running
+  missFlash: null, // { card, value }: the card just missed, shown with its right value
 }
 let revealTimer = null
 let advanceTimer = null
 let toastTimer = null
 let autoDealTimer = null
+let sprintTimer = null
+let missTimer = null
 let backKey = null
 let lastSavedJson = null
 let saving = false
@@ -246,6 +261,7 @@ function react(prev, event) {
   }
   // Also on startDrill: returning to a correctly answered Situation must still move on, or the drill is stuck.
   if ((event.type === 'answer' || event.type === 'startDrill') && state.drill?.feedback?.correct) scheduleAdvance()
+  reactValues(event)
 }
 
 function startReveal() {
@@ -309,6 +325,62 @@ function scheduleAdvance() {
   }, delay)
 }
 
+// The sprint clock starts with the sprint, a miss flashes the right value, and the result is announced.
+function reactValues(event) {
+  const values = state.drill?.values
+  if (event.type === 'sprintStart') {
+    ui.valuesSerial++
+    ui.valuesSeen.clear()
+    startSprintClock()
+  }
+  if (event.type === 'sprintAnswer' && values.miss) flashMiss(values.miss)
+  if (event.type === 'sprintEnd') announce(sprintResultText(values.result))
+}
+
+function startSprintClock() {
+  clearTimeout(sprintTimer)
+  ui.sprintEndsAt = Date.now() + SPRINT_MS
+  sprintTimer = setTimeout(sprintTick, 1000)
+}
+
+// Redraws the clock on each whole second and ends the sprint at 0.
+function sprintTick() {
+  const msLeft = ui.sprintEndsAt - Date.now()
+  if (msLeft <= 0) {
+    endSprint()
+    return
+  }
+  render()
+  sprintTimer = setTimeout(sprintTick, msLeft % 1000 || 1000)
+}
+
+function sprintSecondsLeft() {
+  return Math.max(0, Math.ceil((ui.sprintEndsAt - Date.now()) / 1000))
+}
+
+function endSprint() {
+  clearTimeout(sprintTimer)
+  clearTimeout(missTimer)
+  ui.sprintEndsAt = null
+  ui.missFlash = null
+  dispatch({ type: 'sprintEnd' })
+}
+
+// Leaving the Values drill mid-sprint ends the sprint: a partial score can't beat a full one.
+function leaveValues() {
+  if (state.drill?.values?.phase === 'running') endSprint()
+}
+
+function flashMiss(miss) {
+  clearTimeout(missTimer)
+  ui.missFlash = miss
+  announce(t('sprintMiss', { value: countValueLabel(miss.value) }))
+  missTimer = setTimeout(() => {
+    ui.missFlash = null
+    render()
+  }, MISS_PAUSE_MS)
+}
+
 // Screen readers only reliably announce changes to a live region that already exists.
 function announce(text) {
   announcer.textContent = ''
@@ -328,6 +400,7 @@ function showToast(text) {
 }
 
 function switchTab(tab, { remember = true } = {}) {
+  if (tab !== 'train') leaveValues()
   ui.tab = tab
   if (remember) rememberTab()
   if (tab === 'train') {
@@ -364,7 +437,13 @@ const CLICKS = {
     if (ui.autoBet && idle && !revealing && state.canDeal) dispatch({ type: 'deal' })
     else render()
   },
-  drillMode: ({ mode }) => dispatch({ type: 'startDrill', mode }),
+  drillMode: ({ mode }) => {
+    if (mode === state.drill?.mode) return
+    leaveValues()
+    dispatch({ type: 'startDrill', mode })
+  },
+  sprintStart: () => dispatch({ type: 'sprintStart' }),
+  sprintAnswer: ({ value }) => dispatch({ type: 'sprintAnswer', countValue: Number(value) }),
   answer: ({ action }) => dispatch({ type: 'answer', action }),
   next: () => {
     clearTimeout(advanceTimer)
@@ -548,13 +627,23 @@ function updateProfile() {
 function keyTargets(key) {
   const action = ACTIONS.find((a) => ACTION_KEYS[a] === key)
   if (action) return [`act-${action}`, `answer-${action}`]
-  if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill']
-  const chip = { 1: 10, 2: 25, 3: 100, 4: 500 }[key]
-  if (chip) return [`chip-${chip}`]
+  if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill', 'sprint-start']
+  if (key === 'arrowleft') return ['value-minus']
+  if (key === 'arrowdown') return ['value-zero']
+  if (key === 'arrowright') return ['value-plus']
+  if (/^[1-9]$/.test(key)) return digitTargets(Number(key))
   if (key === 'a') return ['auto']
   if (key === 'c') return ['clear']
   if (key === 'r') return ['rebet']
   return []
+}
+
+// A digit presses whichever numbered button is on screen: a chip in Play, a Count value in Values.
+function digitTargets(n) {
+  const targets = []
+  if (n <= CHIPS.length) targets.push(`chip-${CHIPS[n - 1]}`)
+  if (n <= VALUE_BUTTONS.length) targets.push(VALUE_BUTTONS[n - 1].k)
+  return targets
 }
 
 function onKey(e) {
@@ -772,13 +861,12 @@ function bettingRow() {
 function trainScreen() {
   const { drill } = state
   if (!drill) return ''
-  const modes = DRILL_MODES.map(
+  const tabs = SHOWN_MODES.map(
     (mode) =>
       `<button role="tab" aria-selected="${drill.mode === mode}" data-do="drillMode" data-mode="${mode}" data-k="mode-${mode}">${t(`drill.${mode}`)}</button>`,
   )
-  const streak = `<div class="stat"><span class="label">${t('streak')}</span><strong>${state.streak}</strong></div>
-    <div class="stat"><span class="label">${t('best')}</span><strong>${Math.max(state.bestStreak, state.streak)}</strong></div>`
-  const header = `<header class="bar"><div class="segmented" role="tablist">${modes.join('')}</div>${streak}</header>`
+  const header = `<header class="bar train-bar"><div class="segmented" role="tablist">${tabs.join('')}</div><div class="stats">${trainStats(drill)}</div></header>`
+  if (drill.mode === 'values') return header + valuesScreen(drill.values)
   if (drill.empty) {
     return `${header}
       <section class="empty">
@@ -802,6 +890,68 @@ function trainScreen() {
       <div class="hands${handsClass(round)}">${round.hands.map((hand, i) => trainHandHtml(round, hand, i)).join('')}</div>
     </section>
     <footer class="controls">${controls}<p class="keys muted small">${t('keysTrain')}</p></footer>`
+}
+
+// Each mode's two numbers, always in the same two slots, so the header never changes shape.
+function trainStats(drill) {
+  const stat = (label, value) => `<div class="stat"><span class="label">${label}</span><strong>${value}</strong></div>`
+  if (drill.mode === 'values') return stat(t('time'), sprintClock(drill.values)) + stat(t('bestSprint'), fmt(state.sprintBest))
+  return stat(t('streak'), state.streak) + stat(t('best'), Math.max(state.bestStreak, state.streak))
+}
+
+function sprintClock(values) {
+  if (values.phase === 'running') return sprintSecondsLeft()
+  return values.phase === 'over' ? 0 : SPRINT_MS / 1000
+}
+
+// Values: one big card above the felt print; the three answers sit where the Actions sit in the other drills.
+function valuesScreen(values) {
+  const running = values.phase === 'running'
+  const flash = running ? ui.missFlash : null
+  const dealt = values.score + values.misses // one key per card this sprint, so each new card animates in
+  let card = cardBack('v-back', ui.valuesSeen)
+  if (flash) card = cardFace(flash.card, `v${ui.valuesSerial}-${dealt - 1}`, ui.valuesSeen)
+  else if (values.card) card = cardFace(values.card, `v${ui.valuesSerial}-${dealt}`, ui.valuesSeen)
+  const badge = flash ? `<span class="value-badge">${countValueLabel(flash.value)}</span>` : ''
+  return `
+    <section class="table values">
+      <div class="sprint-card${flash ? ' missed' : ''}">${card}${badge}</div>
+      ${valuesMessage(values)}
+    </section>
+    <footer class="controls">
+      <div class="panel${running ? ' off' : ''}">
+        <button class="primary wide" data-do="sprintStart" data-k="sprint-start" ${running ? 'disabled' : ''}>${t(values.phase === 'over' ? 'again' : 'start')}<kbd>↵</kbd></button>
+      </div>
+      <div class="panel acting${running ? '' : ' off'}">${valueButtons(running && !flash)}</div>
+      <p class="keys muted small">${t('keysValues')}</p>
+    </footer>`
+}
+
+function valuesMessage(values) {
+  if (values.phase === 'running') return feltMessage('', '', '') // nothing to read while the clock runs
+  if (values.phase === 'over') {
+    const { isNewBest } = values.result
+    const sub = isNewBest ? t('sprintNewBest') : t('sprintBestWas', { n: fmt(state.sprintBest) })
+    return feltMessage(isNewBest ? 'good' : 'net', sprintResultText(values.result), sub)
+  }
+  return feltMessage('', t('feltValues'), t('feltValuesSub'))
+}
+
+function sprintResultText({ score, misses }) {
+  return t('sprintResult', { score: fmt(score), misses: fmt(misses) })
+}
+
+function countValueLabel(value) {
+  if (value > 0) return '+1'
+  return value < 0 ? '−1' : '0'
+}
+
+function valueButtons(enabled) {
+  const buttons = VALUE_BUTTONS.map(
+    ({ value, k, key }) =>
+      `<button data-do="sprintAnswer" data-value="${value}" data-k="${k}" ${enabled ? '' : 'disabled'}>${countValueLabel(value)}<kbd>${key}</kbd></button>`,
+  )
+  return `<div class="values-row">${buttons.join('')}</div>`
 }
 
 // The training table: the hole card stays face down while you decide and turns over when your hand is done.
