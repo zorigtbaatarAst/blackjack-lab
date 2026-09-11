@@ -16,7 +16,14 @@ const PAYOUT = { blackjack: 2.5, win: 2, push: 1, lose: 0, bust: 0 } // returned
 const SNAPSHOT_VERSION = 1
 const FIXES_TO_CLEAR = 2 // consecutive Book-matching Decisions that clear a Pending cell
 const MISTAKES_KEPT = 50
-export const DRILL_MODES = ['weighted', 'mistakes']
+export const DRILL_MODES = ['weighted', 'mistakes'] // the Drills that play Training hands
+export const TRAIN_MODES = [...DRILL_MODES, 'values', 'count']
+export const COUNT_SPEEDS = ['slow', 'normal', 'fast']
+const COUNTING_TALLIES = ['values', 'runningCount', 'trueCount', 'bet']
+export const MAX_BET_UNITS = 8 // the Bet ramp's top: 8 units of the table minimum
+const CHECK_QUESTIONS = ['runningCount', 'trueCount', 'bet']
+const MAX_CHECK_GAP = 4 // a Count check comes after 1–4 rounds, at random
+const HALF_DECK = 26
 const ACTION_NAMES = ['hit', 'stand', 'double', 'split']
 const SOURCES = ['play', ...DRILL_MODES]
 const DRILL_EXCLUDED_ROWS = new Set(['H8', 'H17', 'S19', 'S20']) // trivial: never dealt by the Weighted drill
@@ -52,6 +59,14 @@ function isPair(cards) {
 
 function isBlackjack(hand) {
   return !hand.fromSplit && hand.cards.length === 2 && handTotal(hand.cards).total === 21
+}
+
+// Hi-Lo: a low card leaving the Shoe helps the player (+1), a ten or an ace leaving it hurts (−1).
+function countValue(rank) {
+  const points = value(rank)
+  if (points <= 6) return 1
+  if (points <= 9) return 0
+  return -1
 }
 
 // ------------------------------------------------------------------ shoe
@@ -97,7 +112,7 @@ export function newLab(saved, { rng, cards = [], trainingCards = [] } = {}) {
     pendingBet: 0,
     round: null,
     drill: null,
-    trainingCards, // stacks the first Training Shoe (tests); consumed by newTrainingSlot
+    trainingCards, // stacks the first Shoe created in Train (tests); consumed by trainingShoe
     coachFlag: null,
     refilled: false,
     streakEnded: null,
@@ -120,6 +135,8 @@ function freshProgress() {
     hint: false,
     streak: 0,
     bestStreak: 0,
+    sprintBest: 0,
+    countSpeed: 'normal',
     stats: emptyStats(),
     openHand: null,
     openStart: null,
@@ -127,7 +144,11 @@ function freshProgress() {
 }
 
 function emptyStats() {
-  return { cells: {}, mistakes: [], play: { hands: 0, wins: 0, losses: 0, pushes: 0, net: 0 } }
+  return { cells: {}, mistakes: [], play: { hands: 0, wins: 0, losses: 0, pushes: 0, net: 0 }, counting: emptyCounting() }
+}
+
+function emptyCounting() {
+  return Object.fromEntries(COUNTING_TALLIES.map((key) => [key, { correct: 0, total: 0 }]))
 }
 
 // Rejects anything it can't trust: the shell must never build on (and then overwrite) bad progress.
@@ -164,6 +185,16 @@ function restore(saved) {
   }
   const play = stats.play
   if (!['hands', 'wins', 'losses', 'pushes'].every((k) => isCount(play?.[k])) || !Number.isFinite(play.net)) fail('stats.play')
+  // Saves from before counting existed have none of these: counting starts at zero.
+  const sprintBest = saved.sprintBest ?? 0
+  if (!isCount(sprintBest)) fail(`sprintBest ${saved.sprintBest}`)
+  const countSpeed = saved.countSpeed ?? 'normal'
+  if (!COUNT_SPEEDS.includes(countSpeed)) fail(`countSpeed ${saved.countSpeed}`)
+  const counting = stats.counting ?? emptyCounting()
+  for (const key of COUNTING_TALLIES) {
+    const tally = counting[key]
+    if (!isCount(tally?.total) || !isCount(tally.correct) || tally.correct > tally.total) fail(`stats.counting.${key}`)
+  }
   const openHand = saved.openHand ?? null
   if (openHand !== null && !isResumableHand(openHand)) fail(`open hand ${JSON.stringify(openHand)}`)
   // The first deployed build saved an open Situation instead; it restarts as a hand from that Situation.
@@ -176,7 +207,9 @@ function restore(saved) {
     hint: saved.hint,
     streak: saved.streak,
     bestStreak: saved.bestStreak,
-    stats: structuredClone(stats),
+    sprintBest,
+    countSpeed,
+    stats: { ...structuredClone(stats), counting: structuredClone(counting) },
     openHand: structuredClone(openHand),
     openStart: legacy && { cards: structuredClone(legacy.cards), upcard: structuredClone(legacy.upcard) },
   }
@@ -262,6 +295,8 @@ export function snapshot(state) {
     hint: state.hint,
     streak: state.streak,
     bestStreak: state.bestStreak,
+    sprintBest: state.sprintBest,
+    countSpeed: state.countSpeed,
     stats: state.stats,
     openHand: openWeightedHand(state),
   })
@@ -318,9 +353,7 @@ const HANDLERS = {
       net: 0,
       allowed: [],
     }
-    const peeks = upcard.rank === 'A' || value(upcard.rank) === 10
-    const dealerBlackjack = handTotal(s.round.dealer).total === 21
-    if ((peeks && dealerBlackjack) || isBlackjack(s.round.hands[0])) settle(s)
+    if (endsAtDeal(s.round)) settle(s)
   },
 
   act(s, { action }) {
@@ -355,9 +388,20 @@ const HANDLERS = {
   },
 
   startDrill(s, { mode }) {
-    if (!DRILL_MODES.includes(mode)) invalid(`no ${mode} drill`)
+    if (!TRAIN_MODES.includes(mode)) invalid(`no ${mode} drill`)
     s.drill ??= { mode, slots: {} }
     s.drill.mode = mode
+    if (mode === 'values') {
+      s.drill.values ??= newValuesDrill(s)
+      return
+    }
+    if (mode === 'count') {
+      if (!s.drill.count) {
+        s.drill.count = newCountDrill(s)
+        dealCountRound(s, s.drill.count)
+      }
+      return
+    }
     const slot = (s.drill.slots[mode] ??= newTrainingSlot(s))
     // An unfinished hand is kept, so switching modes can't skip a Decision; an empty slot deals.
     if (!slot.round) dealTrainingHand(s, slot, mode)
@@ -386,6 +430,80 @@ const HANDLERS = {
     }
     if (!slot?.feedback) invalid('answer the Decision before next')
     slot.feedback = null
+  },
+
+  sprintStart(s) {
+    const values = s.drill?.mode === 'values' ? s.drill.values : null
+    if (!values) invalid('sprintStart outside the Values drill')
+    if (values.phase === 'running') invalid('the sprint is already running')
+    Object.assign(values, { phase: 'running', score: 0, misses: 0, miss: null, result: null })
+    values.card = drawSprintCard(s, values)
+  },
+
+  sprintAnswer(s, { countValue: answer }) {
+    const values = s.drill?.values
+    if (values?.phase !== 'running') invalid('no sprint running')
+    if (![1, 0, -1].includes(answer)) invalid(`${answer} is not a Count value`)
+    const expected = countValue(values.card.rank)
+    const correct = answer === expected
+    tally(s.stats.counting.values, correct)
+    if (correct) values.score++
+    else values.misses++
+    values.miss = correct ? null : { card: values.card, value: expected }
+    values.card = drawSprintCard(s, values)
+  },
+
+  // The clock is the shell's: it ends the sprint at 0 s, or when the player leaves the drill.
+  sprintEnd(s) {
+    const values = s.drill?.values
+    if (values?.phase !== 'running') invalid('no sprint running')
+    values.phase = 'over'
+    values.result = { score: values.score, misses: values.misses, isNewBest: values.score > s.sprintBest }
+    s.sprintBest = Math.max(s.sprintBest, values.score)
+    values.card = null
+    values.miss = null
+  },
+
+  countNext(s) {
+    const count = s.drill?.mode === 'count' ? s.drill.count : null
+    if (!count) invalid('countNext outside the Count drill')
+    if (count.question) {
+      if (!count.feedback) invalid('answer the Count check first')
+      count.feedback = null
+      const next = CHECK_QUESTIONS[CHECK_QUESTIONS.indexOf(count.question) + 1]
+      if (next) {
+        count.question = next
+        return
+      }
+      // The Bet was the last question: the check closes and the table deals on.
+      count.question = null
+      count.roundsToCheck = checkGap(s.rng)
+      dealCountRound(s, count)
+      return
+    }
+    if (count.roundsToCheck === 0) {
+      count.question = CHECK_QUESTIONS[0]
+      return
+    }
+    dealCountRound(s, count)
+  },
+
+  countAnswer(s, { answer }) {
+    const count = s.drill?.mode === 'count' ? s.drill.count : null
+    if (!count?.question) invalid('no Count check open')
+    if (count.feedback) invalid('the Count check is already answered')
+    if (!Number.isInteger(answer)) invalid(`${answer} is not a whole number`)
+    if (count.question === 'bet' && (answer < 1 || answer > MAX_BET_UNITS)) invalid(`no Bet of ${answer} units`)
+    const { expected, ...working } = expectedAnswer(count)
+    const correct = answer === expected
+    tally(s.stats.counting[count.question], correct)
+    tally(count.session, correct)
+    count.feedback = { question: count.question, correct, answer, expected, ...working }
+  },
+
+  countSpeed(s, { speed }) {
+    if (!COUNT_SPEEDS.includes(speed)) invalid(`no ${speed} speed`)
+    s.countSpeed = speed
   },
 }
 
@@ -477,6 +595,13 @@ function betCap(s) {
 
 function prefillBet(s) {
   return s.lastBet <= s.bankroll ? s.lastBet : MIN_BET
+}
+
+// Peek: an ace or ten-value Upcard with a dealer Blackjack ends the Round at once, and so does a player Blackjack.
+function endsAtDeal(round) {
+  const upcard = round.dealer[0]
+  const peeks = upcard.rank === 'A' || value(upcard.rank) === 10
+  return (peeks && handTotal(round.dealer).total === 21) || isBlackjack(round.hands[0])
 }
 
 // Moves to the next unfinished Hand. Once there is none, the dealer plays; true means the Round can resolve.
@@ -574,6 +699,8 @@ function derive(s) {
     }
     s.drill.empty = s.drill.mode === 'mistakes' && round === null
   }
+  if (s.drill?.count) s.drill.count.halfDecksDealt = halfDecksDealt(s.drill.count)
+  s.checkAccuracy = checkAccuracyOf(s.stats.counting)
   return s
 }
 
@@ -710,11 +837,16 @@ const WEIGHTED_CELLS = CHART_ROWS.flatMap((row, r) =>
 )
 const WEIGHT_TOTAL = WEIGHTED_CELLS.reduce((sum, { weight }) => sum + weight, 0)
 
-// Each drill mode has its own training table. Tests stack the first Training Shoe; later ones are plain shuffles.
-function newTrainingSlot(s) {
-  const slot = { round: null, shoe: newShoe(s.rng, s.trainingCards), feedback: null }
+// Tests stack the first Shoe created in Train, whichever drill creates it; later ones are plain shuffles.
+function trainingShoe(s) {
+  const shoe = newShoe(s.rng, s.trainingCards)
   s.trainingCards = []
-  return slot
+  return shoe
+}
+
+// Each drill mode has its own training table.
+function newTrainingSlot(s) {
+  return { round: null, shoe: trainingShoe(s), feedback: null }
 }
 
 // A new Training hand in the slot: the Weighted pick (or a Pending cell) gives the start, the Training Shoe the rest.
@@ -729,9 +861,14 @@ function dealTrainingHand(s, slot, mode) {
 function trainingRound(table, { cards, upcard }) {
   let hole = draw(table)
   while (handTotal([upcard, hole]).total === 21) hole = draw(table)
+  return freeRound([upcard, hole], cards)
+}
+
+// A Bet-0 Round for Train's tables: no Chips at stake, so Double and Split cost nothing.
+function freeRound(dealer, cards) {
   return {
     phase: 'player',
-    dealer: [upcard, hole],
+    dealer,
     hands: [{ cards, bet: 0, fromSplit: false, splitAces: false, done: false }],
     active: 0,
     bet: 0,
@@ -826,4 +963,101 @@ function shuffled(list, rng) {
   const copy = [...list]
   shuffle(copy, rng)
   return copy
+}
+
+// ------------------------------------------------------------------ Counting (Hi-Lo)
+
+// The Values drill: a sprint through its own Shoe. The engine grades; the 30-second clock is the shell's.
+function newValuesDrill(s) {
+  return { phase: 'ready', shoe: trainingShoe(s), card: null, score: 0, misses: 0, miss: null, result: null }
+}
+
+function drawSprintCard(s, values) {
+  if (values.shoe.next >= values.shoe.cards.length) values.shoe = newShoe(s.rng)
+  return draw(values)
+}
+
+function tally(counter, correct) {
+  counter.total++
+  if (correct) counter.correct++
+}
+
+// The Count drill: real rounds from the Count Shoe, played by the Book, with a Count check every 1–4 rounds.
+function newCountDrill(s) {
+  return {
+    round: null,
+    shoe: trainingShoe(s),
+    runningCount: 0,
+    dealt: 0, // cards dealt since the shuffle: what the Discard tray holds
+    roundsToCheck: checkGap(s.rng),
+    question: null, // 'runningCount' | 'trueCount' | 'bet' while a Count check is open
+    feedback: null,
+    newShoe: false, // this round is the first from a fresh Shoe
+    reshuffled: false, // the last round crossed the Cut card; its count stands until the next deal
+    session: { correct: 0, total: 0 },
+  }
+}
+
+function checkGap(rng) {
+  return 1 + Math.floor(rng() * MAX_CHECK_GAP)
+}
+
+// Deals and plays one round, then counts every card in it. A check due on the Cut-card round still sees the
+// old Shoe's count: the reset waits for this, the next deal.
+function dealCountRound(s, count) {
+  count.newShoe = count.reshuffled
+  if (count.reshuffled) {
+    count.runningCount = 0
+    count.dealt = 0
+  }
+  const shoe = count.shoe
+  playCountRound(s, count)
+  count.reshuffled = count.shoe !== shoe // resolveRound swaps in a new Shoe at the Cut card
+  const cards = [...count.round.dealer, ...count.round.hands.flatMap((hand) => hand.cards)]
+  for (const card of cards) count.runningCount += countValue(card.rank)
+  count.dealt += cards.length
+  count.roundsToCheck--
+}
+
+// Dealt in Play's order with Play's Peek, then every Decision by the Book and the dealer by S17.
+function playCountRound(s, table) {
+  const first = draw(table)
+  const upcard = draw(table)
+  const second = draw(table)
+  const hole = draw(table)
+  table.round = freeRound([upcard, hole], [first, second])
+  if (!endsAtDeal(table.round)) {
+    let dealerPlayed = false
+    while (!dealerPlayed) {
+      const { round } = table
+      const hand = round.hands[round.active]
+      const { action } = bookAction({ cards: hand.cards, upcard, allowed: allowedActions(s, table) })
+      ACTIONS[action](s, table, hand)
+      dealerPlayed = advance(table)
+    }
+  }
+  resolveRound(table, s.rng)
+}
+
+function halfDecksDealt(count) {
+  return Math.round(count.dealt / HALF_DECK)
+}
+
+// The answers for the open Count check, always from the real count, never from the player's earlier answers.
+function expectedAnswer(count) {
+  const { question, runningCount } = count
+  if (question === 'runningCount') return { expected: runningCount }
+  const decksLeft = DECKS - halfDecksDealt(count) / 2
+  const exact = runningCount / decksLeft
+  const trueCount = Math.trunc(exact) || 0 // || 0: never −0
+  if (question === 'trueCount') return { expected: trueCount, runningCount, decksLeft, exact }
+  return { expected: Math.min(Math.max(trueCount - 1, 1), MAX_BET_UNITS), trueCount }
+}
+
+// Every Count-check question answered, all time: the Count header's Accuracy.
+function checkAccuracyOf({ runningCount, trueCount, bet }) {
+  return {
+    correct: runningCount.correct + trueCount.correct + bet.correct,
+    total: runningCount.total + trueCount.total + bet.total,
+  }
 }

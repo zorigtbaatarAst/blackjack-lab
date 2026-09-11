@@ -360,6 +360,31 @@ button.wide {
   min-height: 32px;
   font-size: 13px;
 }
+/* Train: the tabs and the mode's two numbers. On a phone they take two rows in every mode, so switching
+   tabs never moves the table. */
+.train-bar .stats {
+  display: flex;
+  gap: 16px;
+}
+@media (max-width: 600px) {
+  .train-bar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .train-bar .segmented {
+    flex: 1 1 100%;
+  }
+  .train-bar .segmented button {
+    flex: 1 1 auto;
+    padding: 0 6px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .train-bar .stats {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}
 
 /* Two panels stacked in one cell (betting / acting); only one is visible, the cell keeps the taller one's
    height, so switching between them never moves the table. Hidden panels' buttons are also disabled. */
@@ -752,6 +777,113 @@ button.wide {
   text-align: center;
 }
 
+/* ---------------------------------------------------------------- counting */
+
+/* Values: one big card in the upper felt, the print below it. */
+.table.values {
+  grid-template-rows: minmax(0, 1fr) auto;
+  --card-w: clamp(84px, min(26vw, 20vh), 150px);
+}
+.sprint-card {
+  position: relative;
+  justify-self: center;
+}
+.sprint-card .card.enter {
+  animation-duration: 0.1s; /* a speed drill: the next card must be readable at once */
+}
+.sprint-card.missed .card {
+  outline: 4px solid #ff6b5e;
+  outline-offset: 2px;
+}
+.value-badge {
+  position: absolute;
+  top: -12px;
+  right: -14px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #c0392b;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+}
+.values-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.values-row button {
+  height: var(--control-h);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+/* Count: the Discard tray in the felt's corner. 12 half decks × 7px; a line at each deck, a tick at each half. */
+.tray {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 22px;
+  height: 84px;
+  display: flex;
+  align-items: flex-end;
+  border: 2px solid rgb(240 249 243 / 0.55);
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  background: rgb(0 0 0 / 0.2);
+}
+.tray::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(to top, transparent 0 13px, rgb(240 249 243 / 0.75) 13px 14px),
+    repeating-linear-gradient(to top, transparent 0 6px, rgb(240 249 243 / 0.45) 6px 7px) left / 6px 100% no-repeat;
+  pointer-events: none;
+}
+.tray-fill {
+  width: 100%;
+  height: calc(var(--half-decks) * 7px);
+  background: repeating-linear-gradient(to top, var(--back-a) 0 2px, #f3ece0 2px 3px);
+  transition: height 0.3s ease-out;
+}
+.stepper {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr 1.4fr;
+  gap: 8px;
+  align-items: center;
+}
+.stepper button {
+  height: var(--control-h);
+  font-size: 22px;
+}
+.stepper button.primary {
+  font-size: 16px;
+}
+.stepper-value {
+  text-align: center;
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.bet-row {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+}
+.bet-row button {
+  height: var(--control-h);
+  padding: 0;
+  font-size: 18px;
+}
+/* The speed switch fills the controls row: buttons + the segmented padding and border = one control height. */
+.segmented.speed {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+.segmented.speed button {
+  height: calc(var(--control-h) - 6px);
+}
+
 /* ---------------------------------------------------------------- Improve */
 
 .block {
@@ -1064,7 +1196,9 @@ kbd,
 
 @media (prefers-reduced-motion: reduce) {
   .card.enter,
-  .card.flip {
+  .card.flip,
+  .tray-fill {
     animation: none;
+    transition: none;
   }
 }

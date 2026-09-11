@@ -8,8 +8,10 @@ import {
   ACTION_OF_CODE,
   CHART_ROWS,
   CHIPS,
-  DRILL_MODES,
+  COUNT_SPEEDS,
+  MAX_BET_UNITS,
   STARTING_CHIPS,
+  TRAIN_MODES,
   UPCARDS,
 } from './engine.js'
 import { STRINGS } from './strings.js'
@@ -26,6 +28,16 @@ const AUTO_DEAL_MS = 1500 // Auto bet: time to read the result before the next R
 const REVEAL_MS = 450
 const TOAST_MS = 2600
 const NEW_BEST_CARD_MIN = 5
+const SPRINT_MS = 30000
+const MISS_PAUSE_MS = 600 // a missed card shows its right value this long, and taps are ignored meanwhile
+const VALUE_BUTTONS = [
+  { value: -1, k: 'value-minus', key: '←' },
+  { value: 0, k: 'value-zero', key: '↓' },
+  { value: 1, k: 'value-plus', key: '→' },
+]
+const COUNT_CARD_MS = { slow: 1000, normal: 600, fast: 350 } // the Count drill's deal speed, per card
+const ROUND_PAUSE_CARDS = 2 // after a round's last card, this many card intervals before the next step
+const STEPPER_MAX_DIGITS = 3
 const SUIT_GLYPH = { s: '♠', h: '♥', d: '♦', c: '♣' }
 
 const app = document.getElementById('app')
@@ -54,11 +66,24 @@ const ui = {
   situationSerial: 0,
   advanceToken: 0, // invalidates a pending auto-advance when anything else happens first
   autoBet: false, // re-deal the same Bet after every Round; session-only, never saved
+  valuesSeen: new Set(),
+  valuesSerial: 0,
+  sprintEndsAt: null, // the sprint clock, while one is running
+  missFlash: null, // { card, value }: the card just missed, shown with its right value
+  countSeen: new Set(),
+  countSerial: 0,
+  countShown: Infinity, // reveal steps shown of the current Count round
+  stepper: '0', // the Count-check answer as typed
+  stepperTyped: false, // typing replaces the pre-filled value; after that it edits it
+  lastRunningCount: 0, // the last Running count revealed: where the stepper starts
 }
 let revealTimer = null
 let advanceTimer = null
 let toastTimer = null
 let autoDealTimer = null
+let sprintTimer = null
+let missTimer = null
+let countTimer = null
 let backKey = null
 let lastSavedJson = null
 let saving = false
@@ -246,6 +271,8 @@ function react(prev, event) {
   }
   // Also on startDrill: returning to a correctly answered Situation must still move on, or the drill is stuck.
   if ((event.type === 'answer' || event.type === 'startDrill') && state.drill?.feedback?.correct) scheduleAdvance()
+  reactValues(event)
+  reactCount(prev, event)
 }
 
 function startReveal() {
@@ -309,6 +336,196 @@ function scheduleAdvance() {
   }, delay)
 }
 
+// The sprint clock starts with the sprint, a miss flashes the right value, and the result is announced.
+function reactValues(event) {
+  const values = state.drill?.values
+  if (event.type === 'sprintStart') {
+    ui.valuesSerial++
+    ui.valuesSeen.clear()
+    startSprintClock()
+  }
+  if (event.type === 'sprintAnswer' && values.miss) flashMiss(values.miss)
+  if (event.type === 'sprintEnd') announce(sprintResultText(values.result))
+}
+
+function startSprintClock() {
+  clearTimeout(sprintTimer)
+  ui.sprintEndsAt = Date.now() + SPRINT_MS
+  sprintTimer = setTimeout(sprintTick, 1000)
+}
+
+// Redraws the clock on each whole second and ends the sprint at 0.
+function sprintTick() {
+  const msLeft = ui.sprintEndsAt - Date.now()
+  if (msLeft <= 0) {
+    endSprint()
+    return
+  }
+  render()
+  sprintTimer = setTimeout(sprintTick, msLeft % 1000 || 1000)
+}
+
+function sprintSecondsLeft() {
+  return Math.max(0, Math.ceil((ui.sprintEndsAt - Date.now()) / 1000))
+}
+
+function endSprint() {
+  clearTimeout(sprintTimer)
+  clearTimeout(missTimer)
+  ui.sprintEndsAt = null
+  ui.missFlash = null
+  dispatch({ type: 'sprintEnd' })
+}
+
+// Leaving the Values drill mid-sprint ends the sprint: a partial score can't beat a full one.
+function leaveValues() {
+  if (state.drill?.values?.phase === 'running') endSprint()
+}
+
+function flashMiss(miss) {
+  clearTimeout(missTimer)
+  ui.missFlash = miss
+  announce(t('sprintMiss', { value: countValueLabel(miss.value) }))
+  missTimer = setTimeout(() => {
+    ui.missFlash = null
+    render()
+  }, MISS_PAUSE_MS)
+}
+
+// Count pacing: each dealt round is revealed card by card, then a pause, then the next deal or the due check.
+function reactCount(prev, event) {
+  const count = state.drill?.mode === 'count' ? state.drill.count : null
+  if (!count) return
+  if (event.type === 'startDrill') {
+    if (prev.drill?.count) resumeCount(count)
+    else startCountReveal(count) // the first visit dealt the first round
+    return
+  }
+  if (event.type === 'countNext') {
+    if (count.question) openQuestion(count)
+    else startCountReveal(count)
+    return
+  }
+  if (event.type === 'countAnswer') {
+    const { feedback } = count
+    if (feedback.question === 'runningCount') ui.lastRunningCount = feedback.expected
+    const { title, detail } = countFeedbackParts(feedback)
+    announce(`${title}. ${detail}`)
+    if (feedback.correct) scheduleCount(AUTO_ADVANCE_MS)
+  }
+}
+
+function startCountReveal(count) {
+  if (count.newShoe) ui.lastRunningCount = 0
+  ui.countSerial++
+  ui.countSeen.clear()
+  const total = revealSteps(count.round).length
+  // With reduced motion the round shows at once and stays up as long as its reveal would have taken.
+  ui.countShown = reducedMotion ? total : 1
+  scheduleCount(reducedMotion ? (total + ROUND_PAUSE_CARDS) * cardMs() : cardMs())
+}
+
+// Back on the Count tab: the round shows in full, and the drill carries on from where it stopped.
+function resumeCount(count) {
+  ui.countShown = Infinity
+  if (!count.question) scheduleCount(ROUND_PAUSE_CARDS * cardMs())
+  else if (count.feedback?.correct) scheduleCount(AUTO_ADVANCE_MS)
+}
+
+function openQuestion(count) {
+  ui.stepper = count.question === 'runningCount' ? String(ui.lastRunningCount) : '0'
+  ui.stepperTyped = false
+  announce(t(`ask.${count.question}`))
+}
+
+// One reveal tick: the next card; after the last card, the pause; after the pause, the next step.
+function countStep() {
+  const total = revealSteps(state.drill.count.round).length
+  if (ui.countShown >= total) {
+    dispatch({ type: 'countNext' })
+    return
+  }
+  ui.countShown++
+  render()
+  scheduleCount(ui.countShown >= total ? ROUND_PAUSE_CARDS * cardMs() : cardMs())
+}
+
+// The Count drill's one timer: a reveal step while dealing, or moving on after a right answer.
+function scheduleCount(ms) {
+  clearCountTimer()
+  countTimer = setTimeout(() => {
+    countTimer = null
+    if (!countActive()) return
+    const { question, feedback } = state.drill.count
+    if (!question) countStep()
+    else if (feedback?.correct) dispatch({ type: 'countNext' })
+  }, ms)
+}
+
+function clearCountTimer() {
+  clearTimeout(countTimer)
+  countTimer = null
+}
+
+function countActive() {
+  return ui.tab === 'train' && state.drill?.mode === 'count'
+}
+
+function cardMs() {
+  return COUNT_CARD_MS[state.countSpeed]
+}
+
+// The order a Count round appears in: the deal (hole card face down), each Hand's draws in turn, then the
+// hole card turning over and the dealer's draws. Split Hands show side by side from the start.
+function revealSteps(round) {
+  const player = round.hands.flatMap((hand, h) => hand.cards.map((_, c) => ({ hand: h, card: c })))
+  const [first, second, ...rest] = player
+  const dealerDraws = round.dealer.slice(2).map((_, i) => ({ dealer: i + 2 }))
+  return [first, { dealer: 0 }, second, { back: true }, ...rest, { dealer: 1 }, ...dealerDraws]
+}
+
+function countVisibility(round, shown) {
+  const steps = revealSteps(round)
+  const seen = steps.slice(0, shown)
+  const dealerUp = seen.filter((step) => step.dealer !== undefined).length // face-up dealer cards, in order
+  return {
+    hands: round.hands.map((_, h) => seen.filter((step) => step.hand === h).length),
+    dealerUp,
+    holeBack: seen.some((step) => step.back) && dealerUp < 2,
+    complete: shown >= steps.length,
+  }
+}
+
+function stepperValue() {
+  return Number(ui.stepper) || 0 // '', '-' and '-0' all answer 0
+}
+
+function stepperDisplay() {
+  return ui.stepper === '-' ? '−' : signed(stepperValue())
+}
+
+function stepperActive() {
+  const count = countActive() ? state.drill.count : null
+  return Boolean(count && !count.feedback && (count.question === 'runningCount' || count.question === 'trueCount'))
+}
+
+// Typing replaces the pre-filled count; after that digits append, '-' flips the sign, Backspace deletes.
+function stepperKey(key) {
+  const text = ui.stepperTyped ? ui.stepper : ''
+  if (/^[0-9]$/.test(key)) {
+    if (text.replace('-', '').length >= STEPPER_MAX_DIGITS) return true
+    ui.stepper = text + key
+  } else if (key === '-') {
+    ui.stepper = text.startsWith('-') ? text.slice(1) : `-${text}`
+  } else if (key === 'backspace') {
+    ui.stepper = ui.stepper.slice(0, -1)
+  } else {
+    return false
+  }
+  ui.stepperTyped = true
+  return true
+}
+
 // Screen readers only reliably announce changes to a live region that already exists.
 function announce(text) {
   announcer.textContent = ''
@@ -328,6 +545,10 @@ function showToast(text) {
 }
 
 function switchTab(tab, { remember = true } = {}) {
+  if (tab !== 'train') {
+    leaveValues()
+    clearCountTimer() // leaving pauses the Count drill; coming back resumes it
+  }
   ui.tab = tab
   if (remember) rememberTab()
   if (tab === 'train') {
@@ -364,7 +585,26 @@ const CLICKS = {
     if (ui.autoBet && idle && !revealing && state.canDeal) dispatch({ type: 'deal' })
     else render()
   },
-  drillMode: ({ mode }) => dispatch({ type: 'startDrill', mode }),
+  drillMode: ({ mode }) => {
+    if (mode === state.drill?.mode) return
+    leaveValues()
+    clearCountTimer()
+    dispatch({ type: 'startDrill', mode })
+  },
+  sprintStart: () => dispatch({ type: 'sprintStart' }),
+  sprintAnswer: ({ value }) => dispatch({ type: 'sprintAnswer', countValue: Number(value) }),
+  countSpeed: ({ speed }) => dispatch({ type: 'countSpeed', speed }),
+  countAnswer: ({ answer }) => dispatch({ type: 'countAnswer', answer: Number(answer) }),
+  countNext: () => {
+    clearCountTimer()
+    dispatch({ type: 'countNext' })
+  },
+  stepperAdjust: ({ by }) => {
+    ui.stepper = String(stepperValue() + Number(by))
+    ui.stepperTyped = false
+    render()
+  },
+  stepperOk: () => dispatch({ type: 'countAnswer', answer: stepperValue() }),
   answer: ({ action }) => dispatch({ type: 'answer', action }),
   next: () => {
     clearTimeout(advanceTimer)
@@ -548,13 +788,25 @@ function updateProfile() {
 function keyTargets(key) {
   const action = ACTIONS.find((a) => ACTION_KEYS[a] === key)
   if (action) return [`act-${action}`, `answer-${action}`]
-  if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill']
-  const chip = { 1: 10, 2: 25, 3: 100, 4: 500 }[key]
-  if (chip) return [`chip-${chip}`]
+  if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill', 'sprint-start', 'stepper-ok']
+  if (key === 'arrowleft') return ['value-minus', 'stepper-minus']
+  if (key === 'arrowdown') return ['value-zero']
+  if (key === 'arrowright') return ['value-plus', 'stepper-plus']
+  if (/^[1-9]$/.test(key)) return digitTargets(Number(key))
   if (key === 'a') return ['auto']
   if (key === 'c') return ['clear']
   if (key === 'r') return ['rebet']
   return []
+}
+
+// A digit presses whichever numbered button is on screen: a chip, a Count value, a speed or a Bet.
+function digitTargets(n) {
+  const targets = []
+  if (n <= CHIPS.length) targets.push(`chip-${CHIPS[n - 1]}`)
+  if (n <= VALUE_BUTTONS.length) targets.push(VALUE_BUTTONS[n - 1].k)
+  if (n <= COUNT_SPEEDS.length) targets.push(`speed-${COUNT_SPEEDS[n - 1]}`)
+  if (n <= MAX_BET_UNITS) targets.push(`bet-${n}`)
+  return targets
 }
 
 function onKey(e) {
@@ -562,6 +814,11 @@ function onKey(e) {
   const key = e.key.toLowerCase()
   if (ui.overlay) {
     if (key === 'escape') CLICKS.closeOverlay()
+    return
+  }
+  if (stepperActive() && stepperKey(key)) {
+    e.preventDefault()
+    render()
     return
   }
   // Enter/Space on a focused button already clicks it natively; don't click a second thing.
@@ -772,13 +1029,13 @@ function bettingRow() {
 function trainScreen() {
   const { drill } = state
   if (!drill) return ''
-  const modes = DRILL_MODES.map(
+  const tabs = TRAIN_MODES.map(
     (mode) =>
       `<button role="tab" aria-selected="${drill.mode === mode}" data-do="drillMode" data-mode="${mode}" data-k="mode-${mode}">${t(`drill.${mode}`)}</button>`,
   )
-  const streak = `<div class="stat"><span class="label">${t('streak')}</span><strong>${state.streak}</strong></div>
-    <div class="stat"><span class="label">${t('best')}</span><strong>${Math.max(state.bestStreak, state.streak)}</strong></div>`
-  const header = `<header class="bar"><div class="segmented" role="tablist">${modes.join('')}</div>${streak}</header>`
+  const header = `<header class="bar train-bar"><div class="segmented" role="tablist">${tabs.join('')}</div><div class="stats">${trainStats(drill)}</div></header>`
+  if (drill.mode === 'values') return header + valuesScreen(drill.values)
+  if (drill.mode === 'count') return header + countScreen(drill.count)
   if (drill.empty) {
     return `${header}
       <section class="empty">
@@ -802,6 +1059,178 @@ function trainScreen() {
       <div class="hands${handsClass(round)}">${round.hands.map((hand, i) => trainHandHtml(round, hand, i)).join('')}</div>
     </section>
     <footer class="controls">${controls}<p class="keys muted small">${t('keysTrain')}</p></footer>`
+}
+
+// Each mode's two numbers, always in the same two slots, so the header never changes shape.
+function trainStats(drill) {
+  const stat = (label, value) => `<div class="stat"><span class="label">${label}</span><strong>${value}</strong></div>`
+  if (drill.mode === 'values') return stat(t('time'), sprintClock(drill.values)) + stat(t('bestSprint'), fmt(state.sprintBest))
+  if (drill.mode === 'count') {
+    const { session } = drill.count
+    return stat(t('checks'), `${fmt(session.correct)}/${fmt(session.total)}`) + stat(t('accuracy'), pct(state.checkAccuracy))
+  }
+  return stat(t('streak'), state.streak) + stat(t('best'), Math.max(state.bestStreak, state.streak))
+}
+
+function sprintClock(values) {
+  if (values.phase === 'running') return sprintSecondsLeft()
+  return values.phase === 'over' ? 0 : SPRINT_MS / 1000
+}
+
+// Values: one big card above the felt print; the three answers sit where the Actions sit in the other drills.
+function valuesScreen(values) {
+  const running = values.phase === 'running'
+  const flash = running ? ui.missFlash : null
+  const dealt = values.score + values.misses // one key per card this sprint, so each new card animates in
+  let card = cardBack('v-back', ui.valuesSeen)
+  if (flash) card = cardFace(flash.card, `v${ui.valuesSerial}-${dealt - 1}`, ui.valuesSeen)
+  else if (values.card) card = cardFace(values.card, `v${ui.valuesSerial}-${dealt}`, ui.valuesSeen)
+  const badge = flash ? `<span class="value-badge">${countValueLabel(flash.value)}</span>` : ''
+  return `
+    <section class="table values">
+      <div class="sprint-card${flash ? ' missed' : ''}">${card}${badge}</div>
+      ${valuesMessage(values)}
+    </section>
+    <footer class="controls">
+      <div class="panel${running ? ' off' : ''}">
+        <button class="primary wide" data-do="sprintStart" data-k="sprint-start" ${running ? 'disabled' : ''}>${t(values.phase === 'over' ? 'again' : 'start')}<kbd>↵</kbd></button>
+      </div>
+      <div class="panel acting${running ? '' : ' off'}">${valueButtons(running && !flash)}</div>
+      <p class="keys muted small">${t('keysValues')}</p>
+    </footer>`
+}
+
+function valuesMessage(values) {
+  if (values.phase === 'running') return feltMessage('', '', '') // nothing to read while the clock runs
+  if (values.phase === 'over') {
+    const { isNewBest } = values.result
+    const sub = isNewBest ? t('sprintNewBest') : t('sprintBestWas', { n: fmt(state.sprintBest) })
+    return feltMessage(isNewBest ? 'good' : 'net', sprintResultText(values.result), sub)
+  }
+  return feltMessage('', t('feltValues'), t('feltValuesSub'))
+}
+
+function sprintResultText({ score, misses }) {
+  return t('sprintResult', { score: fmt(score), misses: fmt(misses) })
+}
+
+function countValueLabel(value) {
+  if (value > 0) return '+1'
+  return value < 0 ? '−1' : '0'
+}
+
+function valueButtons(enabled) {
+  const buttons = VALUE_BUTTONS.map(
+    ({ value, k, key }) =>
+      `<button data-do="sprintAnswer" data-value="${value}" data-k="${k}" ${enabled ? '' : 'disabled'}>${countValueLabel(value)}<kbd>${key}</kbd></button>`,
+  )
+  return `<div class="values-row">${buttons.join('')}</div>`
+}
+
+// Count: the Train felt plus the Discard tray. The controls row swaps between speed, stepper, Bet and Next,
+// all one height.
+function countScreen(count) {
+  const { round, question, feedback } = count
+  const vis = countVisibility(round, ui.countShown)
+  const needsNext = Boolean(feedback && !feedback.correct)
+  const stepping = question === 'runningCount' || question === 'trueCount'
+  return `
+    <section class="table count">
+      ${discardTray(count.halfDecksDealt)}
+      ${countDealerHtml(round, vis)}
+      ${countMessage(count)}
+      <div class="hands${handsClass(round)}">${round.hands.map((hand, i) => countHandHtml(hand, i, vis)).join('')}</div>
+    </section>
+    <footer class="controls">
+      <div class="panel${question ? ' off' : ''}">${speedSwitch(!question)}</div>
+      <div class="panel${stepping && !needsNext ? '' : ' off'}">${stepperHtml(stepping && !feedback)}</div>
+      <div class="panel${question === 'bet' && !needsNext ? '' : ' off'}">${betButtons(question === 'bet' && !feedback)}</div>
+      <div class="panel next${needsNext ? '' : ' off'}">
+        <button class="primary wide" data-do="countNext" data-k="next" ${needsNext ? '' : 'disabled'}>${t('next')}<kbd>↵</kbd></button>
+      </div>
+      <p class="keys muted small">${t('keysCount')}</p>
+    </footer>`
+}
+
+function countDealerHtml(round, vis) {
+  const key = (i) => `c${ui.countSerial}-d${i}`
+  const cards = round.dealer
+    .slice(0, vis.dealerUp)
+    .map((card, i) => cardFace(card, key(i), ui.countSeen, i === 1 ? 'flip' : 'enter')) // the hole card turns over
+  if (vis.holeBack) cards.push(cardBack(key('back'), ui.countSeen))
+  const total = vis.complete ? ` · <strong>${totalLabel(round.dealer)}</strong>` : ''
+  return `<div class="dealer"><div class="label">${t('dealer')}${total}</div><div class="cards">${cards.join('')}</div></div>`
+}
+
+function countHandHtml(hand, i, vis) {
+  const shown = hand.cards.slice(0, vis.hands[i])
+  const cards = shown.map((card, j) => cardFace(card, `c${ui.countSerial}-h${i}-${j}`, ui.countSeen))
+  const total = shown.length > 0 ? `<strong>${totalLabel(shown)}</strong>` : ''
+  const result = vis.complete ? ` <span class="badge ${hand.result}">${t(`result.${hand.result}`)}</span>` : ''
+  return `<div class="hand"><div class="cards">${cards.join('')}</div><div class="meta">${total}${result}</div></div>`
+}
+
+function countMessage(count) {
+  const { question, feedback } = count
+  if (feedback) {
+    const { kind, title, detail } = countFeedbackParts(feedback)
+    return feltMessage(kind, title, detail)
+  }
+  if (question) return feltMessage('hint', t(`ask.${question}`), t(`askSub.${question}`))
+  if (count.newShoe) return feltMessage('hint', t('newShoe'), t('newShoeSub'))
+  return feltMessage('', t('feltCount'), t('feltCountSub'))
+}
+
+// The verdict on a Count-check answer, with the working for the True count and the Bet.
+function countFeedbackParts(feedback) {
+  const { question, correct, expected, answer } = feedback
+  const shown = (n) => (question === 'bet' ? units(n) : signed(n))
+  const what = t(`label.${question}`)
+  const title = correct ? `✓ ${what}: ${shown(expected)}` : `✗ ${t('itWas', { what, n: shown(expected) })}`
+  let detail = correct ? t('carryOn') : t('youSaid', { n: shown(answer) })
+  if (question === 'trueCount') {
+    const { runningCount, decksLeft, exact } = feedback
+    detail = t('tcWorking', { rc: signed(runningCount), decks: fmt(decksLeft), exact: signed(exact), tc: signed(expected) })
+  }
+  if (question === 'bet') detail = t('betWorking', { tc: signed(feedback.trueCount), units: units(expected) })
+  return { kind: correct ? 'good' : 'bad', title, detail }
+}
+
+function units(n) {
+  return t(n === 1 ? 'betUnit' : 'betUnits', { n })
+}
+
+// The Discard tray: a line at each deck, a tick at each half deck, filled in half-deck steps. Reading it is
+// the skill, so it shows no number; screen readers get the decks dealt in its label.
+function discardTray(halfDecks) {
+  const label = esc(t('trayLabel', { n: fmt(halfDecks / 2) }))
+  return `<div class="tray" role="img" aria-label="${label}"><div class="tray-fill" style="--half-decks: ${halfDecks}"></div></div>`
+}
+
+function speedSwitch(enabled) {
+  const buttons = COUNT_SPEEDS.map(
+    (speed, i) =>
+      `<button role="tab" aria-selected="${state.countSpeed === speed}" data-do="countSpeed" data-speed="${speed}" data-k="speed-${speed}" ${enabled ? '' : 'disabled'}>${t(`speed.${speed}`)}<kbd>${i + 1}</kbd></button>`,
+  )
+  return `<div class="segmented speed" role="tablist">${buttons.join('')}</div>`
+}
+
+function stepperHtml(enabled) {
+  const off = enabled ? '' : 'disabled'
+  return `<div class="stepper">
+    <button data-do="stepperAdjust" data-by="-1" data-k="stepper-minus" aria-label="${t('oneLess')}" ${off}>−<kbd>←</kbd></button>
+    <output class="stepper-value">${stepperDisplay()}</output>
+    <button data-do="stepperAdjust" data-by="1" data-k="stepper-plus" aria-label="${t('oneMore')}" ${off}>+<kbd>→</kbd></button>
+    <button class="primary" data-do="stepperOk" data-k="stepper-ok" ${off}>${t('answerOk')}<kbd>↵</kbd></button>
+  </div>`
+}
+
+function betButtons(enabled) {
+  const buttons = Array.from({ length: MAX_BET_UNITS }, (_, i) => i + 1).map(
+    (n) =>
+      `<button data-do="countAnswer" data-answer="${n}" data-k="bet-${n}" aria-label="${esc(units(n))}" ${enabled ? '' : 'disabled'}>${n}</button>`,
+  )
+  return `<div class="bet-row">${buttons.join('')}</div>`
 }
 
 // The training table: the hole card stays face down while you decide and turns over when your hand is done.
@@ -846,17 +1275,33 @@ function improveScreen() {
     <section class="block">${chartHtml(stats.cells)}</section>
     <section class="block">${mistakesHtml(stats.mistakes)}</section>
     <section class="block">${playStatsHtml(stats.play)}</section>
+    <section class="block">${countingHtml()}</section>
     <div class="reset-row">
       <button data-do="bankrollAsk" data-k="new-bankroll" ${state.round?.phase === 'player' ? `disabled title="${t('finishRoundFirst')}"` : ''}>${t('newBankroll')}</button>
       <button class="danger" data-do="resetAsk" data-k="reset">${t('resetStats')}</button>
     </div>`
 }
 
+function accuracyTile(key, tally) {
+  return `<div class="tile"><span class="label">${t(key)}</span><strong>${pct(tally)}</strong><span class="muted small">${t('ofDecisions', tally)}</span></div>`
+}
+
 function accuracyHtml(accuracy) {
-  const tile = (key, tally) =>
-    `<div class="tile"><span class="label">${t(key)}</span><strong>${pct(tally)}</strong><span class="muted small">${t('ofDecisions', tally)}</span></div>`
   return `<div class="hero">${pct(accuracy.overall)}<span class="muted small">${t('ofDecisions', accuracy.overall)}</span></div>
-    <div class="tiles">${tile('group.hard', accuracy.hard)}${tile('group.soft', accuracy.soft)}${tile('group.pairs', accuracy.pairs)}</div>`
+    <div class="tiles">${accuracyTile('group.hard', accuracy.hard)}${accuracyTile('group.soft', accuracy.soft)}${accuracyTile('group.pairs', accuracy.pairs)}</div>`
+}
+
+// Counting progress: the Best sprint, then each counting skill's accuracy.
+function countingHtml() {
+  const { counting } = state.stats
+  return `<h2>${t('countingTitle')}</h2>
+    <div class="tiles">
+      <div class="tile"><span class="label">${t('bestSprint')}</span><strong>${fmt(state.sprintBest)}</strong><span class="muted small">${t('sprintUnit')}</span></div>
+      ${accuracyTile('countValues', counting.values)}
+      ${accuracyTile('label.runningCount', counting.runningCount)}
+      ${accuracyTile('label.trueCount', counting.trueCount)}
+      ${accuracyTile('label.bet', counting.bet)}
+    </div>`
 }
 
 function boardHtml() {
