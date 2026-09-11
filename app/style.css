@@ -1125,6 +1125,71 @@ button.wide {
   border-radius: 16px 16px 0 0;
   background: var(--bg);
 }
+/* The Tour: a card with a small felt picture, dots, and Skip / Back / Next. */
+.tour-art {
+  --card-w: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 124px;
+  border-radius: 14px;
+  background: radial-gradient(120% 85% at 50% 30%, var(--felt) 0%, var(--felt-deep) 78%);
+}
+.tour-art .cards {
+  min-height: 0;
+}
+.tour-art .stack {
+  transform: scale(1.8);
+}
+.tour-art .hm-cell {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font-weight: 800;
+}
+.tour-check {
+  color: #7dffa9;
+  font-size: 44px;
+  font-weight: 800;
+}
+.tour-help {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border: 3px solid var(--gold);
+  border-radius: 50%;
+  color: var(--gold);
+  font-size: 34px;
+  font-weight: 800;
+}
+.tour-text {
+  margin: 0;
+}
+.tour-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+.tour-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.tour-dots .on {
+  background: var(--gold);
+}
+.tour-row {
+  display: flex;
+  gap: 8px;
+}
+.tour-row .primary {
+  margin-left: auto;
+}
 
 .visually-hidden {
   position: absolute;

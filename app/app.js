@@ -15,6 +15,7 @@ import {
   UPCARDS,
 } from './engine.js'
 import { STRINGS } from './strings.js'
+import { GUIDE } from './guide.js'
 
 const STORAGE_KEY = 'lab'
 const UI_KEY = 'ui'
@@ -130,7 +131,8 @@ async function boot() {
   app.innerHTML = `${profileHtml()}<div id="view"></div>`
   app.addEventListener('click', onClick)
   document.addEventListener('keydown', onKey)
-  if (loaded.saved == null) ui.overlay = { type: 'bankroll', first: true, pick: null }
+  // First launch: the Tour, which ends in the Starting-chips picker.
+  if (loaded.saved == null) ui.overlay = { type: 'tour', slide: 0, first: true }
   switchTab(TABS.includes(loaded.tab) ? loaded.tab : 'play', { remember: false })
 }
 
@@ -641,15 +643,28 @@ const CLICKS = {
     dispatch({ type: 'resetStats' })
   },
   closeOverlay: () => {
-    ui.overlay = null
+    const { type, first } = ui.overlay ?? {}
+    // Skipping or finishing the first-launch Tour still leads to choosing Starting chips.
+    ui.overlay = type === 'tour' && first ? { type: 'bankroll', first: true, pick: null } : null
+    if (type === 'bankroll' && first) finishFirstLaunch() // closing the first picker keeps the default chips
     render()
   },
+  tourStep: ({ by }) => tourStep(Number(by)),
 }
 
 function setBankroll(chips) {
+  const first = ui.overlay?.first
   ui.overlay = null
   dispatch({ type: 'newBankroll', chips })
+  if (first) finishFirstLaunch()
   announce(t('bankrollSet', { n: fmt(chips) }))
+}
+
+// The first launch ends once chips are chosen or the default kept. Save now, even when the state equals a fresh
+// one (1,000 chips, nothing played), or the Tour and the picker would come back on the next launch.
+function finishFirstLaunch() {
+  lastSavedJson = null
+  save()
 }
 
 function onClick(e) {
@@ -752,7 +767,7 @@ function render() {
   view.querySelector('main').scrollTop = scroll
   if (focused) view.querySelector(`[data-k="${focused}"]`)?.focus()
   const modal = view.querySelector('.modal')
-  if (modal && !modal.contains(document.activeElement)) modal.querySelector('button')?.focus()
+  if (modal && !modal.contains(document.activeElement)) (modal.querySelector('[data-autofocus]') ?? modal.querySelector('button'))?.focus()
   updateProfile()
   syncBackButton()
 }
@@ -813,7 +828,7 @@ function onKey(e) {
   if (!state || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
   const key = e.key.toLowerCase()
   if (ui.overlay) {
-    if (key === 'escape') CLICKS.closeOverlay()
+    overlayKey(key)
     return
   }
   if (stepperActive() && stepperKey(key)) {
@@ -831,6 +846,13 @@ function onKey(e) {
       return
     }
   }
+}
+
+// In a dialog only Esc works (it closes; in the Tour it skips), plus ← and → to page through the Tour.
+function overlayKey(key) {
+  if (key === 'escape') CLICKS.closeOverlay()
+  else if (ui.overlay.type === 'tour' && key === 'arrowright') tourStep(1)
+  else if (ui.overlay.type === 'tour' && key === 'arrowleft') tourStep(-1)
 }
 
 // The host back claim is one-shot: claim again whenever the screen that needs it changes.
@@ -1421,6 +1443,7 @@ function playStatsHtml(play) {
 function overlayHtml() {
   const overlay = ui.overlay
   if (!overlay) return ''
+  if (overlay.type === 'tour') return tourHtml(overlay)
   if (overlay.type === 'bankroll') return bankrollHtml(overlay)
   if (overlay.type === 'reset') {
     return modal(`
@@ -1441,6 +1464,49 @@ function overlayHtml() {
     <p>${t('newBestBody', { n: overlay.length })}${overlay.rank ? ` ${t('newBestRank', { rank: esc(overlay.rank) })}` : ''}</p>
     ${board}
     <button class="primary wide" data-do="closeOverlay" data-k="close">${t('close')}</button>`)
+}
+
+function tourStep(by) {
+  const slide = ui.overlay.slide + by
+  if (slide < 0 || slide >= GUIDE[lang].tour.length) return
+  ui.overlay.slide = slide
+  render()
+}
+
+// The welcome slides: on first launch (ending in the chip picker), or replayed from the Guide.
+function tourHtml({ slide, first }) {
+  const slides = GUIDE[lang].tour
+  const { art, title, text } = slides[slide]
+  const last = slide === slides.length - 1
+  const dots = slides.map((_, i) => `<span class="${i === slide ? 'on' : ''}"></span>`).join('')
+  const next = last
+    ? `<button class="primary" data-do="closeOverlay" data-k="tour-end" data-autofocus>${t(first ? 'tourChips' : 'tourDone')}</button>`
+    : `<button class="primary" data-do="tourStep" data-by="1" data-k="tour-next" data-autofocus>${t('next')} →</button>`
+  const skip = last ? '' : `<button data-do="closeOverlay" data-k="tour-skip">${t('tourSkip')}</button>`
+  return modal(`
+    <div class="tour-art" aria-hidden="true">${tourArt(art)}</div>
+    <h2 id="dialog-title">${esc(title)}</h2>
+    <p class="tour-text">${esc(text)}</p>
+    <div class="tour-dots" role="img" aria-label="${esc(t('tourStep', { n: slide + 1, total: slides.length }))}">${dots}</div>
+    <div class="tour-row">
+      ${skip}
+      <button data-do="tourStep" data-by="-1" data-k="tour-back" ${slide === 0 ? 'disabled' : ''}>← ${t('tourBack')}</button>
+      ${next}
+    </div>`)
+}
+
+function tourArt(art) {
+  const cards = (codes) => `<div class="cards">${codes.map(guideCard).join('')}</div>`
+  if (art === 'blackjack') return cards(['As', 'Kh'])
+  if (art === 'chips') return chipStack(635)
+  if (art === 'check') return `${cards(['10s', '6h'])}<span class="tour-check">✓</span>`
+  if (art === 'chart') return ['H', 'S', 'D', 'P'].map((code) => `<span class="hm-cell act-${CODE_CLASS[code]}">${code}</span>`).join('')
+  return '<span class="tour-help">?</span>'
+}
+
+// A card from a content code like 'As' or '10h': the rank, then the suit letter. Drawn still: no deal animation.
+function guideCard(code) {
+  return cardFace({ rank: code.slice(0, -1), suit: code.slice(-1) }, '', new Set(), '')
 }
 
 function bankrollHtml({ first, pick }) {
