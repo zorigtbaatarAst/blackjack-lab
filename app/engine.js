@@ -17,9 +17,13 @@ const SNAPSHOT_VERSION = 1
 const FIXES_TO_CLEAR = 2 // consecutive Book-matching Decisions that clear a Pending cell
 const MISTAKES_KEPT = 50
 export const DRILL_MODES = ['weighted', 'mistakes'] // the Drills that play Training hands
-export const TRAIN_MODES = [...DRILL_MODES, 'values']
+export const TRAIN_MODES = [...DRILL_MODES, 'values', 'count']
 export const COUNT_SPEEDS = ['slow', 'normal', 'fast']
 const COUNTING_TALLIES = ['values', 'runningCount', 'trueCount', 'bet']
+export const MAX_BET_UNITS = 8 // the Bet ramp's top: 8 units of the table minimum
+const CHECK_QUESTIONS = ['runningCount', 'trueCount', 'bet']
+const MAX_CHECK_GAP = 4 // a Count check comes after 1–4 rounds, at random
+const HALF_DECK = 26
 const ACTION_NAMES = ['hit', 'stand', 'double', 'split']
 const SOURCES = ['play', ...DRILL_MODES]
 const DRILL_EXCLUDED_ROWS = new Set(['H8', 'H17', 'S19', 'S20']) // trivial: never dealt by the Weighted drill
@@ -349,9 +353,7 @@ const HANDLERS = {
       net: 0,
       allowed: [],
     }
-    const peeks = upcard.rank === 'A' || value(upcard.rank) === 10
-    const dealerBlackjack = handTotal(s.round.dealer).total === 21
-    if ((peeks && dealerBlackjack) || isBlackjack(s.round.hands[0])) settle(s)
+    if (endsAtDeal(s.round)) settle(s)
   },
 
   act(s, { action }) {
@@ -391,6 +393,13 @@ const HANDLERS = {
     s.drill.mode = mode
     if (mode === 'values') {
       s.drill.values ??= newValuesDrill(s)
+      return
+    }
+    if (mode === 'count') {
+      if (!s.drill.count) {
+        s.drill.count = newCountDrill(s)
+        dealCountRound(s, s.drill.count)
+      }
       return
     }
     const slot = (s.drill.slots[mode] ??= newTrainingSlot(s))
@@ -453,6 +462,48 @@ const HANDLERS = {
     s.sprintBest = Math.max(s.sprintBest, values.score)
     values.card = null
     values.miss = null
+  },
+
+  countNext(s) {
+    const count = s.drill?.mode === 'count' ? s.drill.count : null
+    if (!count) invalid('countNext outside the Count drill')
+    if (count.question) {
+      if (!count.feedback) invalid('answer the Count check first')
+      count.feedback = null
+      const next = CHECK_QUESTIONS[CHECK_QUESTIONS.indexOf(count.question) + 1]
+      if (next) {
+        count.question = next
+        return
+      }
+      // The Bet was the last question: the check closes and the table deals on.
+      count.question = null
+      count.roundsToCheck = checkGap(s.rng)
+      dealCountRound(s, count)
+      return
+    }
+    if (count.roundsToCheck === 0) {
+      count.question = CHECK_QUESTIONS[0]
+      return
+    }
+    dealCountRound(s, count)
+  },
+
+  countAnswer(s, { answer }) {
+    const count = s.drill?.mode === 'count' ? s.drill.count : null
+    if (!count?.question) invalid('no Count check open')
+    if (count.feedback) invalid('the Count check is already answered')
+    if (!Number.isInteger(answer)) invalid(`${answer} is not a whole number`)
+    if (count.question === 'bet' && (answer < 1 || answer > MAX_BET_UNITS)) invalid(`no Bet of ${answer} units`)
+    const { expected, ...working } = expectedAnswer(count)
+    const correct = answer === expected
+    tally(s.stats.counting[count.question], correct)
+    tally(count.session, correct)
+    count.feedback = { question: count.question, correct, answer, expected, ...working }
+  },
+
+  countSpeed(s, { speed }) {
+    if (!COUNT_SPEEDS.includes(speed)) invalid(`no ${speed} speed`)
+    s.countSpeed = speed
   },
 }
 
@@ -544,6 +595,13 @@ function betCap(s) {
 
 function prefillBet(s) {
   return s.lastBet <= s.bankroll ? s.lastBet : MIN_BET
+}
+
+// Peek: an ace or ten-value Upcard with a dealer Blackjack ends the Round at once, and so does a player Blackjack.
+function endsAtDeal(round) {
+  const upcard = round.dealer[0]
+  const peeks = upcard.rank === 'A' || value(upcard.rank) === 10
+  return (peeks && handTotal(round.dealer).total === 21) || isBlackjack(round.hands[0])
 }
 
 // Moves to the next unfinished Hand. Once there is none, the dealer plays; true means the Round can resolve.
@@ -641,6 +699,8 @@ function derive(s) {
     }
     s.drill.empty = s.drill.mode === 'mistakes' && round === null
   }
+  if (s.drill?.count) s.drill.count.halfDecksDealt = halfDecksDealt(s.drill.count)
+  s.checkAccuracy = checkAccuracyOf(s.stats.counting)
   return s
 }
 
@@ -801,9 +861,14 @@ function dealTrainingHand(s, slot, mode) {
 function trainingRound(table, { cards, upcard }) {
   let hole = draw(table)
   while (handTotal([upcard, hole]).total === 21) hole = draw(table)
+  return freeRound([upcard, hole], cards)
+}
+
+// A Bet-0 Round for Train's tables: no Chips at stake, so Double and Split cost nothing.
+function freeRound(dealer, cards) {
   return {
     phase: 'player',
-    dealer: [upcard, hole],
+    dealer,
     hands: [{ cards, bet: 0, fromSplit: false, splitAces: false, done: false }],
     active: 0,
     bet: 0,
@@ -915,4 +980,84 @@ function drawSprintCard(s, values) {
 function tally(counter, correct) {
   counter.total++
   if (correct) counter.correct++
+}
+
+// The Count drill: real rounds from the Count Shoe, played by the Book, with a Count check every 1–4 rounds.
+function newCountDrill(s) {
+  return {
+    round: null,
+    shoe: trainingShoe(s),
+    runningCount: 0,
+    dealt: 0, // cards dealt since the shuffle: what the Discard tray holds
+    roundsToCheck: checkGap(s.rng),
+    question: null, // 'runningCount' | 'trueCount' | 'bet' while a Count check is open
+    feedback: null,
+    newShoe: false, // this round is the first from a fresh Shoe
+    reshuffled: false, // the last round crossed the Cut card; its count stands until the next deal
+    session: { correct: 0, total: 0 },
+  }
+}
+
+function checkGap(rng) {
+  return 1 + Math.floor(rng() * MAX_CHECK_GAP)
+}
+
+// Deals and plays one round, then counts every card in it. A check due on the Cut-card round still sees the
+// old Shoe's count: the reset waits for this, the next deal.
+function dealCountRound(s, count) {
+  count.newShoe = count.reshuffled
+  if (count.reshuffled) {
+    count.runningCount = 0
+    count.dealt = 0
+  }
+  const shoe = count.shoe
+  playCountRound(s, count)
+  count.reshuffled = count.shoe !== shoe // resolveRound swaps in a new Shoe at the Cut card
+  const cards = [...count.round.dealer, ...count.round.hands.flatMap((hand) => hand.cards)]
+  for (const card of cards) count.runningCount += countValue(card.rank)
+  count.dealt += cards.length
+  count.roundsToCheck--
+}
+
+// Dealt in Play's order with Play's Peek, then every Decision by the Book and the dealer by S17.
+function playCountRound(s, table) {
+  const first = draw(table)
+  const upcard = draw(table)
+  const second = draw(table)
+  const hole = draw(table)
+  table.round = freeRound([upcard, hole], [first, second])
+  if (!endsAtDeal(table.round)) {
+    let dealerPlayed = false
+    while (!dealerPlayed) {
+      const { round } = table
+      const hand = round.hands[round.active]
+      const { action } = bookAction({ cards: hand.cards, upcard, allowed: allowedActions(s, table) })
+      ACTIONS[action](s, table, hand)
+      dealerPlayed = advance(table)
+    }
+  }
+  resolveRound(table, s.rng)
+}
+
+function halfDecksDealt(count) {
+  return Math.round(count.dealt / HALF_DECK)
+}
+
+// The answers for the open Count check, always from the real count, never from the player's earlier answers.
+function expectedAnswer(count) {
+  const { question, runningCount } = count
+  if (question === 'runningCount') return { expected: runningCount }
+  const decksLeft = DECKS - halfDecksDealt(count) / 2
+  const exact = runningCount / decksLeft
+  const trueCount = Math.trunc(exact) || 0 // || 0: never −0
+  if (question === 'trueCount') return { expected: trueCount, runningCount, decksLeft, exact }
+  return { expected: Math.min(Math.max(trueCount - 1, 1), MAX_BET_UNITS), trueCount }
+}
+
+// Every Count-check question answered, all time: the Count header's Accuracy.
+function checkAccuracyOf({ runningCount, trueCount, bet }) {
+  return {
+    correct: runningCount.correct + trueCount.correct + bet.correct,
+    total: runningCount.total + trueCount.total + bet.total,
+  }
 }
