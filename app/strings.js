@@ -113,6 +113,7 @@ export const STRINGS = {
     chartRing: 'Your mistakes (thicker ring = more often)',
     chartCell: '{row} vs {up}: {action}. {correct} of {total} correct.',
     chartCellEmpty: '{row} vs {up}: {action}. Not played yet.',
+    chartCellPlain: '{row} vs {up}: {action}.',
     mistakesTitle: 'Recent mistakes',
     noMistakes: 'No mistakes yet.',
     mistakeLine: 'You: {chosen} · Book: {book}',
@@ -147,6 +148,8 @@ export const STRINGS = {
     tourDone: 'Done',
     tourReplay: 'Replay the tour',
     tourStep: 'Slide {n} of {total}',
+    guide: 'Guide',
+    guideOpen: 'Open the Guide',
 
     boardTitle: 'Leaderboard · best streak',
     friends: 'Friends',
@@ -309,6 +312,7 @@ export const STRINGS = {
     chartRing: 'Таны алдаа (зузаан хүрээ = олон удаа)',
     chartCell: '{row} ба {up}: {action}. {total}-с {correct} зөв.',
     chartCellEmpty: '{row} ба {up}: {action}. Одоогоор тоглоогүй.',
+    chartCellPlain: '{row} ба {up}: {action}.',
     mistakesTitle: 'Сүүлийн алдаанууд',
     noMistakes: 'Алдаа алга байна.',
     mistakeLine: 'Та: {chosen} · Стратеги: {book}',
@@ -343,6 +347,8 @@ export const STRINGS = {
     tourDone: 'Болсон',
     tourReplay: 'Танилцуулгыг дахин үзэх',
     tourStep: '{total}-с {n}-р хуудас',
+    guide: 'Гарын авлага',
+    guideOpen: 'Гарын авлага нээх',
 
     boardTitle: 'Тэргүүлэгчид · шилдэг цуврал',
     friends: 'Найзууд',

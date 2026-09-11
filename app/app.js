@@ -470,7 +470,7 @@ function clearCountTimer() {
 }
 
 function countActive() {
-  return ui.tab === 'train' && state.drill?.mode === 'count'
+  return ui.tab === 'train' && state.drill?.mode === 'count' && !ui.overlay
 }
 
 function cardMs() {
@@ -643,13 +643,20 @@ const CLICKS = {
     dispatch({ type: 'resetStats' })
   },
   closeOverlay: () => {
-    const { type, first } = ui.overlay ?? {}
+    const { type, first, sawChart } = ui.overlay ?? {}
     // Skipping or finishing the first-launch Tour still leads to choosing Starting chips.
     ui.overlay = type === 'tour' && first ? { type: 'bankroll', first: true, pick: null } : null
     if (type === 'bankroll' && first) finishFirstLaunch() // closing the first picker keeps the default chips
+    if (type === 'guide') afterGuide(sawChart)
     render()
   },
   tourStep: ({ by }) => tourStep(Number(by)),
+  guideOpen: ({ chapter }) => openGuide(chapter),
+  guideChapter: ({ chapter }) => showChapter(chapter),
+  tourReplay: () => {
+    ui.overlay = { type: 'tour', slide: 0, first: false }
+    render()
+  },
 }
 
 function setBankroll(chips) {
@@ -658,6 +665,33 @@ function setBankroll(chips) {
   dispatch({ type: 'newBankroll', chips })
   if (first) finishFirstLaunch()
   announce(t('bankrollSet', { n: fmt(chips) }))
+}
+
+// The Guide covers the table: a sprint can't run behind it, and the Count drill waits for it to close.
+function openGuide(chapter) {
+  if (ui.overlay) return // never on top of another dialog
+  leaveValues()
+  clearCountTimer()
+  ui.overlay = { type: 'guide', chapter, sawChart: false }
+  showChapter(chapter)
+}
+
+// Only the strategy chapter shows Book actions, so only it marks waiting Decisions as Looked up.
+function showChapter(chapter) {
+  ui.overlay.chapter = chapter
+  if (chapter !== 'strategy') {
+    render()
+    return
+  }
+  ui.overlay.sawChart = true
+  dispatch({ type: 'lookUp' }) // dispatch renders
+}
+
+// Back from the Guide: a hand dealt behind an open chart is looked up too, and paused drills carry on.
+function afterGuide(sawChart) {
+  if (sawChart) dispatch({ type: 'lookUp' })
+  if (countActive()) resumeCount(state.drill.count)
+  if (ui.tab === 'play' && ui.autoBet) scheduleAutoDeal()
 }
 
 // The first launch ends once chips are chosen or the default kept. Save now, even when the state equals a fresh
@@ -754,6 +788,8 @@ function render() {
   const view = document.getElementById('view')
   const main = view.querySelector('main')
   const scroll = main?.dataset.tab === ui.tab ? main.scrollTop : 0
+  const guide = view.querySelector('.guide-body')
+  const guideScroll = guide && guide.dataset.chapter === ui.overlay?.chapter ? guide.scrollTop : 0
   const focused = document.activeElement?.dataset?.k
   const screen = { play: playScreen, train: trainScreen, improve: improveScreen }[ui.tab]
   const inert = ui.overlay ? ' inert' : '' // a modal dialog keeps Tab and screen readers inside it
@@ -765,6 +801,8 @@ function render() {
     ${overlayHtml()}
     ${ui.toast ? `<div class="toast">${esc(ui.toast)}</div>` : ''}`
   view.querySelector('main').scrollTop = scroll
+  const guideBody = view.querySelector('.guide-body')
+  if (guideBody) guideBody.scrollTop = guideScroll
   if (focused) view.querySelector(`[data-k="${focused}"]`)?.focus()
   const modal = view.querySelector('.modal')
   if (modal && !modal.contains(document.activeElement)) (modal.querySelector('[data-autofocus]') ?? modal.querySelector('button'))?.focus()
@@ -784,6 +822,7 @@ function profileHtml() {
   return `<header class="profile">
     <span class="avatar" aria-hidden="true">${initial}${photo}</span>
     <span class="who"><strong>${esc(name)}</strong><small id="profile-note"></small></span>
+    <button class="help-button" data-do="guideOpen" data-chapter="play" data-k="guide" aria-label="${t('guideOpen')}">?</button>
     <span class="purse"><span class="label">${t('chips')}</span><strong id="profile-chips"></strong></span>
   </header>`
 }
@@ -829,6 +868,11 @@ function onKey(e) {
   const key = e.key.toLowerCase()
   if (ui.overlay) {
     overlayKey(key)
+    return
+  }
+  if (key === '?') {
+    e.preventDefault()
+    openGuide('play')
     return
   }
   if (stepperActive() && stepperKey(key)) {
@@ -1378,7 +1422,9 @@ function heatLevel(mistakeRate) {
 // strategy chart from the first launch. Unplayed cells are faded; a white ring marks Mistakes, thicker = more often.
 const CODE_CLASS = { H: 'hit', S: 'stand', D: 'double', Ds: 'double-stand', P: 'split' }
 
-function chartHtml(cells) {
+// The chart's grid and action legend. With the player's cells it is their chart (unplayed cells faded, Mistakes
+// ringed); with null it is the plain Book, as the Guide shows it.
+function chartGrid(cells) {
   const head = `<div class="hm-row hm-head"><span></span>${UPCARDS.map((up) => `<span>${up}</span>`).join('')}</div>`
   let group = null
   const rows = CHART_ROWS.map((row) => {
@@ -1386,11 +1432,15 @@ function chartHtml(cells) {
     group = row.group
     const cellsHtml = row.codes.map((code, col) => {
       const up = UPCARDS[col]
-      const cell = cells[row.cells[col]]
       const vars = { row: rowTitle(row), up, action: actionName(ACTION_OF_CODE[code]) }
-      const state = cell ? `miss-${heatLevel(1 - cell.correct / cell.total)}` : 'unplayed'
-      const label = cell ? t('chartCell', { ...vars, correct: cell.correct, total: cell.total }) : t('chartCellEmpty', vars)
-      return `<span class="hm-cell act-${CODE_CLASS[code]} ${state}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
+      const cell = cells?.[row.cells[col]]
+      let state = ''
+      let label = t('chartCellPlain', vars)
+      if (cells) {
+        state = cell ? ` miss-${heatLevel(1 - cell.correct / cell.total)}` : ' unplayed'
+        label = cell ? t('chartCell', { ...vars, correct: cell.correct, total: cell.total }) : t('chartCellEmpty', vars)
+      }
+      return `<span class="hm-cell act-${CODE_CLASS[code]}${state}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
     })
     return `${heading}<div class="hm-row"><span class="hm-label">${rowLabel(row.id)}</span>${cellsHtml.join('')}</div>`
   })
@@ -1402,10 +1452,14 @@ function chartHtml(cells) {
     swatch('Ds', `${actionName('double')} / ${actionName('stand')}`),
     swatch('P', actionName('split')),
   ]
+  return `<div class="heatmap">${head}${rows.join('')}</div>
+    <div class="legend small">${actions.join('')}</div>`
+}
+
+function chartHtml(cells) {
   return `<h2>${t('chartTitle')}</h2>
     <p class="muted small">${t('chartNote')}</p>
-    <div class="heatmap">${head}${rows.join('')}</div>
-    <div class="legend small">${actions.join('')}</div>
+    ${chartGrid(cells)}
     <div class="legend small">
       <span class="legend-item"><span class="hm-cell act-hit unplayed"></span> ${t('chartNew')}</span>
       <span class="legend-item"><span class="hm-cell act-hit miss-1"></span><span class="hm-cell act-hit miss-4"></span> ${t('chartRing')}</span>
@@ -1444,6 +1498,7 @@ function overlayHtml() {
   const overlay = ui.overlay
   if (!overlay) return ''
   if (overlay.type === 'tour') return tourHtml(overlay)
+  if (overlay.type === 'guide') return guideHtml(overlay)
   if (overlay.type === 'bankroll') return bankrollHtml(overlay)
   if (overlay.type === 'reset') {
     return modal(`
@@ -1509,6 +1564,44 @@ function guideCard(code) {
   return cardFace({ rank: code.slice(0, -1), suit: code.slice(-1) }, '', new Set(), '')
 }
 
+// The Guide: chapter chips across the top, the chapter below; only the body scrolls.
+function guideHtml({ chapter }) {
+  const { chapters } = GUIDE[lang]
+  const current = chapters.find((c) => c.id === chapter)
+  const chips = chapters.map(
+    (c) =>
+      `<button role="tab" aria-selected="${c.id === chapter}" data-do="guideChapter" data-chapter="${c.id}" data-k="chapter-${c.id}">${esc(c.title)}</button>`,
+  )
+  return modal(
+    `<header class="guide-top">
+      <h2 id="dialog-title">${t('guide')}</h2>
+      <button class="guide-close" data-do="closeOverlay" data-k="guide-close" aria-label="${t('close')}">✕</button>
+    </header>
+    <nav class="guide-chapters" role="tablist">${chips.join('')}</nav>
+    <article class="guide-body" data-chapter="${chapter}">
+      <h3 class="guide-title">${esc(current.title)}</h3>
+      ${current.blocks.map(guideBlock).join('')}
+    </article>`,
+    ' guide',
+  )
+}
+
+const RULE_IDS = [...new Set(CHART_ROWS.map((row) => row.rule)), 'no-double', 'no-split']
+
+// Guide content is plain text in structured blocks; everything is escaped here.
+function guideBlock(block) {
+  if (block.h) return `<h4>${esc(block.h)}</h4>`
+  if (block.p) return `<p>${esc(block.p)}</p>`
+  if (block.list) return `<ul>${block.list.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`
+  if (block.cards) {
+    return `<figure class="guide-cards"><div class="cards">${block.cards.map(guideCard).join('')}</div><figcaption>${esc(block.caption)}</figcaption></figure>`
+  }
+  if (block.chart) return chartGrid(null)
+  if (block.rules) return `<ul class="guide-rules">${RULE_IDS.map((rule) => `<li>${esc(t(`rule.${rule}`))}</li>`).join('')}</ul>`
+  if (block.tourButton) return `<button class="primary" data-do="tourReplay" data-k="tour-replay">${t('tourReplay')}</button>`
+  throw new Error(`unknown Guide block ${JSON.stringify(block)}`)
+}
+
 function bankrollHtml({ first, pick }) {
   if (pick) {
     return modal(`
@@ -1529,6 +1622,6 @@ function bankrollHtml({ first, pick }) {
     ${first ? '' : `<button data-do="closeOverlay" data-k="cancel">${t('cancel')}</button>`}`)
 }
 
-function modal(content) {
-  return `<div class="scrim"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title">${content}</div></div>`
+function modal(content, variant = '') {
+  return `<div class="scrim"><div class="modal${variant}" role="dialog" aria-modal="true" aria-labelledby="dialog-title">${content}</div></div>`
 }
