@@ -2,3 +2,4 @@ token.txt
 .env*
 node_modules/
 .vercel/
+vercel-token.txt
