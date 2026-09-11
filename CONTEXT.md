@@ -118,6 +118,33 @@ _Avoid_: Hard hand, tricky hand (a "hard hand" is a Hard total)
 **Pending cell**:
 A Chart cell with a Mistake the player has not yet corrected by two consecutive Book-matching Decisions there.
 
+## Counting
+
+**Hi-Lo**:
+The card-counting system Train teaches.
+
+**Count value**:
+A card's Hi-Lo value: +1 for 2–6, 0 for 7–9, −1 for ten-value cards and aces.
+_Avoid_: Tag, card value (a card's value is its points in a Hand)
+
+**Running count**:
+The sum of the Count values of every card seen since the Shoe was shuffled.
+
+**Discard tray**:
+Where dealt cards go; its height shows how many decks have been dealt since the shuffle.
+
+**Decks left**:
+Six minus the decks in the Discard tray, read to the nearest half deck.
+
+**True count**:
+The Running count divided by the Decks left, dropping the fraction.
+
+**Bet ramp**:
+The Bet for a True count: the True count minus one, in units of the table minimum, at least 1 and at most 8.
+
+**Count check**:
+The questions the Count drill asks at a random point every 1–4 rounds: the Running count, then the True count, then the Bet.
+
 ## Modes
 
 **Play**:
@@ -127,7 +154,7 @@ Real Rounds for Chips against the dealer.
 Where the player practises Decisions without Chips; holds the Drills.
 
 **Drill**:
-A sequence of Training hands, each played Decision by Decision until it's over.
+One of Train's exercises. The Weighted and Mistakes drills play Training hands, each Decision by Decision until it's over; the Values and Count drills practise counting.
 
 **Weighted drill**:
 The default Drill: each Training hand starts from a Situation biased toward Soft totals, Pairs and Close calls.
@@ -142,6 +169,15 @@ _Avoid_: Practice round, drill round
 
 **Training Shoe**:
 The six-deck Shoe a Drill deals from after a Training hand's start; separate from the Play Shoe.
+
+**Values drill**:
+A 30-second sprint: the player gives as many cards their Count value as they can.
+
+**Count drill**:
+Rounds dealt from the Count Shoe and played by the Book while the player keeps the Running count and answers Count checks.
+
+**Count Shoe**:
+The six-deck Shoe the Count drill deals from; separate from the Play Shoe and the Training Shoes.
 
 **Coach**:
 The Book check that runs on every Decision in Play and flags Mistakes after the Action is taken.
@@ -159,6 +195,9 @@ The count of consecutive Book-matching Decisions in the Weighted drill; a Mistak
 
 **Best streak**:
 The player's longest Streak; the metric on the leaderboard.
+
+**Best sprint**:
+The player's highest Values drill score; kept like the Best streak, but not on the leaderboard.
 
 **Guest**:
 A Usion visitor who is not logged in; can play and train but has no rank.
