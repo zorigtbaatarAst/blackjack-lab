@@ -426,6 +426,9 @@ button.wide {
   grid-template-columns: 1fr 1fr 1.4fr;
   gap: 8px;
 }
+.modal .row {
+  grid-template-columns: 1fr 1fr; /* dialogs have two choices, not the betting row's three */
+}
 .row button,
 .controls .wide {
   height: var(--control-h);
@@ -915,8 +918,28 @@ button.wide {
   text-align: center;
 }
 .reset-row {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
   padding: 16px 0 24px;
-  text-align: center;
+}
+.bankroll-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.bankroll-option {
+  height: 64px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.bankroll-option.current {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgb(244 194 79 / 0.35);
 }
 
 /* ---------------------------------------------------------------- notices and overlays */

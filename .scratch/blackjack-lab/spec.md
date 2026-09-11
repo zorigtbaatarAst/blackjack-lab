@@ -162,7 +162,8 @@ The app opens straight onto the table, follows Usion's theme and language (Engli
 - **Split:** any two cards of equal value (ten-value cards count as equal), up to four Hands in total, and the Bankroll must cover it. Split aces get one card each and can't be re-split. 21 on a split Hand is not a Blackjack.
 - Hands auto-stand on 21 (hard or soft) and after split aces are dealt. A Busted Hand loses regardless of the dealer. The dealer doesn't draw if every player Hand has Busted.
 - **Bet lifecycle:** the Bet is deducted from the live Bankroll at deal, and again for each Double or Split. It becomes the last Bet only at Settlement. The snapshot always reports the Bankroll and last Bet as of the last Settlement. That is why a Round interrupted by a reload is voided and its Bet effectively refunded (ADR 0004). Decisions are saved as they're made, voided Round or not.
-- **Refill:** at Settlement, if the Bankroll is below 10, it is reset to 1,000 and the Refill signal is raised. Refills don't count toward net Chips.
+- **Starting chips:** the player picks 500, 1,000, 5,000 or 10,000. On first launch (no saved progress) a picker sits over the table: one tap starts, and Esc or back keeps 1,000. Later, **New bankroll** in Improve reopens it with a confirmation. That replaces the current chips, is disabled during a Round, and leaves stats, Streak and rank alone. The choice is saved as `startingChips`; saves from before it load as 1,000.
+- **Refill:** at Settlement, or when a save loads, if the Bankroll is below 10 it is reset to the player's starting chips and the Refill signal is raised. Refills don't count toward net Chips.
 - **Pending Bet:** it is pre-filled with the last Bet, or 10 on first launch or if the last Bet isn't affordable. That happens at launch and after every Settlement, so Deal is always one tap away. Clear empties it, and Rebet restores the last Bet.
 
 ### The Book (Strategy chart)

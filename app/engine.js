@@ -3,7 +3,8 @@
 
 const DECKS = 6
 const CUT_CARD = Math.floor(DECKS * 52 * 0.75) // reshuffle after the Round in which this many cards were dealt
-export const START_BANKROLL = 1000
+export const START_BANKROLL = 1000 // the default starting chips, and what saves from before the choice use
+export const STARTING_CHIPS = [500, 1000, 5000, 10000]
 const MAX_HANDS = 4
 const MIN_BET = 10
 const MAX_BET = 500
@@ -88,7 +89,7 @@ export function newLab(saved, { rng, cards = [] } = {}) {
   if (typeof rng !== 'function') throw new Error('newLab: rng function required')
   const { openSituation, ...progress } = saved == null ? freshProgress() : restore(saved)
   // Same rule as Settlement: a Bankroll that can't cover the minimum is Refilled, never left stuck.
-  if (progress.bankroll < MIN_BET) progress.bankroll = START_BANKROLL
+  if (progress.bankroll < MIN_BET) progress.bankroll = progress.startingChips
   const s = {
     ...progress,
     rng,
@@ -108,6 +109,7 @@ export function newLab(saved, { rng, cards = [] } = {}) {
 function freshProgress() {
   return {
     bankroll: START_BANKROLL,
+    startingChips: START_BANKROLL,
     lastBet: MIN_BET,
     hint: false,
     streak: 0,
@@ -129,6 +131,8 @@ function restore(saved) {
   const isCount = (n) => Number.isInteger(n) && n >= 0
   if (saved?.v !== SNAPSHOT_VERSION) fail(`unknown version ${saved?.v}`)
   if (!Number.isFinite(saved.bankroll) || saved.bankroll < 0) fail(`bankroll ${saved.bankroll}`)
+  const startingChips = saved.startingChips ?? START_BANKROLL // saves from before the choice existed
+  if (!STARTING_CHIPS.includes(startingChips)) fail(`startingChips ${saved.startingChips}`)
   if (!Number.isFinite(saved.lastBet) || saved.lastBet < MIN_BET || saved.lastBet > MAX_BET) fail(`lastBet ${saved.lastBet}`)
   if (typeof saved.hint !== 'boolean') fail(`hint ${saved.hint}`)
   if (!isCount(saved.streak) || !isCount(saved.bestStreak)) fail('streak')
@@ -157,6 +161,7 @@ function restore(saved) {
   if (openSituation !== null && !isRealSituation(openSituation)) fail(`open situation ${JSON.stringify(openSituation)}`)
   return {
     bankroll: saved.bankroll,
+    startingChips,
     lastBet: saved.lastBet,
     hint: saved.hint,
     streak: saved.streak,
@@ -201,6 +206,7 @@ export function snapshot(state) {
   return structuredClone({
     v: SNAPSHOT_VERSION,
     bankroll: state.bankroll + inFlight,
+    startingChips: state.startingChips,
     lastBet: state.lastBet,
     hint: state.hint,
     streak: state.streak,
@@ -273,6 +279,14 @@ const HANDLERS = {
     }
     ACTIONS[action](s, hand)
     advance(s)
+  },
+
+  newBankroll(s, { chips }) {
+    requireBetting(s)
+    if (!STARTING_CHIPS.includes(chips)) invalid(`no ${chips} starting chips`)
+    s.startingChips = chips
+    s.bankroll = chips
+    s.pendingBet = prefillBet(s)
   },
 
   toggleHint(s) {
@@ -440,7 +454,7 @@ function settle(s) {
   stats.play.net += round.net
   round.phase = 'settled'
   if (s.bankroll < MIN_BET) {
-    s.bankroll = START_BANKROLL
+    s.bankroll = s.startingChips
     s.refilled = true
   }
   if (s.shoe.next >= CUT_CARD) s.shoe = newShoe(s.rng)

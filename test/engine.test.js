@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { newLab, step, snapshot, bookAction, CHART_ROWS, UPCARDS } from '../app/engine.js'
+import { newLab, step, snapshot, bookAction, CHART_ROWS, UPCARDS, STARTING_CHIPS } from '../app/engine.js'
 
 // mulberry32: tiny seeded PRNG so shuffles and drills are reproducible.
 function seeded(seed = 1) {
@@ -748,4 +748,38 @@ test('Settlement records the Bankroll before payouts, so the reveal can show it'
   assert.equal(doubled.bankroll, 1020)
   const blackjack = run(lab(['A', '6', 'K', '5']), deal)
   assert.equal(blackjack.round.bankrollBeforePayout, 990)
+})
+
+// ---------------------------------------------------------------- starting chips
+
+const newBankroll = (chips) => ({ type: 'newBankroll', chips })
+
+test('the starting-chip options are 500, 1,000, 5,000 and 10,000', () => {
+  assert.deepEqual(STARTING_CHIPS, [500, 1000, 5000, 10000])
+})
+
+test('newBankroll sets the chips and the Refill amount, and is saved', () => {
+  const s = run(lab(), newBankroll(5000))
+  assert.equal(s.bankroll, 5000)
+  assert.equal(s.startingChips, 5000)
+  assert.equal(snapshot(s).startingChips, 5000)
+  assert.equal(newLab(snapshot(s), { rng: seeded(3) }).startingChips, 5000)
+})
+
+test('newBankroll only takes the four amounts, and only between Rounds', () => {
+  assert.throws(() => step(lab(), newBankroll(777)), /starting chips/)
+  const inRound = run(lab(['10', '9', '7', '8']), deal)
+  assert.throws(() => step(inRound, newBankroll(500)), /closed/)
+})
+
+test('Refill tops up to the chosen starting chips', () => {
+  const s = run(lab(['10', '9', '6', '10'], saved({ bankroll: 15, startingChips: 5000 })), deal, act('stand'))
+  assert.equal(s.bankroll, 5000)
+  assert.equal(s.refilled, true)
+  assert.equal(lab([], saved({ bankroll: 5, startingChips: 500 })).bankroll, 500)
+})
+
+test('older saves without startingChips load as 1,000; unknown amounts are rejected', () => {
+  assert.equal(lab([], saved()).startingChips, 1000)
+  assert.throws(() => lab([], saved({ startingChips: 777 })), /startingChips/)
 })

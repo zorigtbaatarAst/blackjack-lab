@@ -9,7 +9,7 @@ import {
   CHART_ROWS,
   CHIPS,
   DRILL_MODES,
-  START_BANKROLL,
+  STARTING_CHIPS,
   UPCARDS,
 } from './engine.js'
 import { STRINGS } from './strings.js'
@@ -103,6 +103,7 @@ async function boot() {
   app.innerHTML = `${profileHtml()}<div id="view"></div>`
   app.addEventListener('click', onClick)
   document.addEventListener('keydown', onKey)
+  if (loaded.saved == null) ui.overlay = { type: 'bankroll', first: true, pick: null }
   switchTab(TABS.includes(loaded.tab) ? loaded.tab : 'play', { remember: false })
 }
 
@@ -259,7 +260,7 @@ function finishReveal() {
   announce(t('roundNet', { n: signed(state.round.net) }))
   if (ui.refillPending) {
     ui.refillPending = false
-    showToast(t('refilled', { n: fmt(START_BANKROLL) }))
+    showToast(t('refilled', { n: fmt(state.startingChips) }))
   }
   if (!ui.autoBet) return
   // The engine pre-fills the last Bet, or the table minimum when that's no longer affordable. Auto bet
@@ -364,6 +365,20 @@ const CLICKS = {
     ui.overlay.view = view
     render()
   },
+  bankrollAsk: () => {
+    ui.overlay = { type: 'bankroll', first: false, pick: null }
+    render()
+  },
+  pickBankroll: ({ chips }) => {
+    const card = ui.overlay
+    // First launch: nothing to lose, so one tap starts. Later it replaces real chips, so confirm first.
+    if (card.first) setBankroll(Number(chips))
+    else {
+      card.pick = Number(chips)
+      render()
+    }
+  },
+  bankrollYes: () => setBankroll(ui.overlay.pick),
   resetAsk: () => {
     ui.overlay = { type: 'reset' }
     render()
@@ -376,6 +391,12 @@ const CLICKS = {
     ui.overlay = null
     render()
   },
+}
+
+function setBankroll(chips) {
+  ui.overlay = null
+  dispatch({ type: 'newBankroll', chips })
+  announce(t('bankrollSet', { n: fmt(chips) }))
 }
 
 function onClick(e) {
@@ -783,7 +804,10 @@ function improveScreen() {
     <section class="block">${chartHtml(stats.cells)}</section>
     <section class="block">${mistakesHtml(stats.mistakes)}</section>
     <section class="block">${playStatsHtml(stats.play)}</section>
-    <div class="reset-row"><button class="danger" data-do="resetAsk" data-k="reset">${t('resetStats')}</button></div>`
+    <div class="reset-row">
+      <button data-do="bankrollAsk" data-k="new-bankroll" ${state.round?.phase === 'player' ? `disabled title="${t('finishRoundFirst')}"` : ''}>${t('newBankroll')}</button>
+      <button class="danger" data-do="resetAsk" data-k="reset">${t('resetStats')}</button>
+    </div>`
 }
 
 function accuracyHtml(accuracy) {
@@ -910,6 +934,7 @@ function playStatsHtml(play) {
 function overlayHtml() {
   const overlay = ui.overlay
   if (!overlay) return ''
+  if (overlay.type === 'bankroll') return bankrollHtml(overlay)
   if (overlay.type === 'reset') {
     return modal(`
       <p id="dialog-title">${t('resetConfirm')}</p>
@@ -929,6 +954,26 @@ function overlayHtml() {
     <p>${t('newBestBody', { n: overlay.length })}${overlay.rank ? ` ${t('newBestRank', { rank: esc(overlay.rank) })}` : ''}</p>
     ${board}
     <button class="primary wide" data-do="closeOverlay" data-k="close">${t('close')}</button>`)
+}
+
+function bankrollHtml({ first, pick }) {
+  if (pick) {
+    return modal(`
+      <p id="dialog-title">${t('bankrollConfirm', { current: fmt(state.bankroll), n: fmt(pick) })}</p>
+      <div class="row">
+        <button data-do="closeOverlay" data-k="cancel">${t('cancel')}</button>
+        <button class="primary" data-do="bankrollYes" data-k="bankroll-yes">${t('bankrollStart', { n: fmt(pick) })}</button>
+      </div>`)
+  }
+  const options = STARTING_CHIPS.map((chips) => {
+    const current = chips === state.startingChips
+    return `<button class="bankroll-option${current ? ' current' : ''}" data-do="pickBankroll" data-chips="${chips}" data-k="bankroll-${chips}">${fmt(chips)}</button>`
+  })
+  return modal(`
+    <h2 id="dialog-title">${t(first ? 'bankrollTitleFirst' : 'newBankroll')}</h2>
+    <p class="muted">${t('bankrollBody')}</p>
+    <div class="bankroll-options">${options.join('')}</div>
+    ${first ? '' : `<button data-do="closeOverlay" data-k="cancel">${t('cancel')}</button>`}`)
 }
 
 function modal(content) {
