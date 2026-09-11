@@ -816,6 +816,73 @@ button.wide {
   font-size: 20px;
   font-variant-numeric: tabular-nums;
 }
+/* Count: the Discard tray in the felt's corner. 12 half decks × 7px; a line at each deck, a tick at each half. */
+.tray {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 22px;
+  height: 84px;
+  display: flex;
+  align-items: flex-end;
+  border: 2px solid rgb(240 249 243 / 0.55);
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  background: rgb(0 0 0 / 0.2);
+}
+.tray::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(to top, transparent 0 13px, rgb(240 249 243 / 0.75) 13px 14px),
+    repeating-linear-gradient(to top, transparent 0 6px, rgb(240 249 243 / 0.45) 6px 7px) left / 6px 100% no-repeat;
+  pointer-events: none;
+}
+.tray-fill {
+  width: 100%;
+  height: calc(var(--half-decks) * 7px);
+  background: repeating-linear-gradient(to top, var(--back-a) 0 2px, #f3ece0 2px 3px);
+  transition: height 0.3s ease-out;
+}
+.stepper {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr 1.4fr;
+  gap: 8px;
+  align-items: center;
+}
+.stepper button {
+  height: var(--control-h);
+  font-size: 22px;
+}
+.stepper button.primary {
+  font-size: 16px;
+}
+.stepper-value {
+  text-align: center;
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.bet-row {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+}
+.bet-row button {
+  height: var(--control-h);
+  padding: 0;
+  font-size: 18px;
+}
+/* The speed switch fills the controls row: buttons + the segmented padding and border = one control height. */
+.segmented.speed {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+.segmented.speed button {
+  height: calc(var(--control-h) - 6px);
+}
 
 /* ---------------------------------------------------------------- Improve */
 
@@ -1129,7 +1196,9 @@ kbd,
 
 @media (prefers-reduced-motion: reduce) {
   .card.enter,
-  .card.flip {
+  .card.flip,
+  .tray-fill {
     animation: none;
+    transition: none;
   }
 }
