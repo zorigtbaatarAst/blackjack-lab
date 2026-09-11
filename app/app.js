@@ -276,7 +276,13 @@ function scheduleAutoDeal() {
   clearTimeout(autoDealTimer)
   autoDealTimer = setTimeout(() => {
     const idle = !state.round || state.round.phase === 'settled'
-    if (!ui.autoBet || ui.tab !== 'play' || ui.overlay || !idle || !state.canDeal) return
+    if (!ui.autoBet || ui.tab !== 'play' || ui.overlay || !idle) return
+    if (!state.canDeal) {
+      ui.autoBet = false // never leave Auto on with nothing it can deal and the betting panel hidden
+      showToast(t('autoStopped'))
+      render()
+      return
+    }
     dispatch({ type: 'deal' })
   }, AUTO_DEAL_MS)
 }
@@ -330,9 +336,15 @@ const CLICKS = {
   act: ({ action }) => dispatch({ type: 'act', action }),
   hint: () => dispatch({ type: 'toggleHint' }),
   autoBet: () => {
+    const idle = !state.round || state.round.phase === 'settled'
+    // The betting panel is hidden while Auto runs, so it must start from a Bet that can actually be dealt.
+    if (!ui.autoBet && idle && !state.canDeal) {
+      showToast(t('autoNeedsBet'))
+      render()
+      return
+    }
     ui.autoBet = !ui.autoBet
     clearTimeout(autoDealTimer)
-    const idle = !state.round || state.round.phase === 'settled'
     const revealing = state.round?.phase === 'settled' && ui.dealerShown < state.round.dealer.length
     // Turning it on at an idle table deals right away; mid-Round it takes over after this Round.
     if (ui.autoBet && idle && !revealing && state.canDeal) dispatch({ type: 'deal' })
@@ -602,7 +614,8 @@ function actionButtons(doName, allowed, locked = false) {
 function playScreen() {
   const { round } = state
   const revealing = round?.phase === 'settled' && ui.dealerShown < round.dealer.length
-  const acting = round?.phase === 'player' || revealing
+  // With Auto on the table never drops back to betting between Rounds: the greyed Action row stays.
+  const acting = round?.phase === 'player' || revealing || ui.autoBet
   return `
     <header class="bar">
       <div class="shoe"><i aria-hidden="true"></i>${t('cardsLeft', { n: state.cardsLeft })}</div>
