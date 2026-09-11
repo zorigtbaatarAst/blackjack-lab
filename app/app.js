@@ -456,6 +456,7 @@ function render() {
   const focused = document.activeElement?.dataset?.k
   const screen = { play: playScreen, train: trainScreen, improve: improveScreen }[ui.tab]
   const inert = ui.overlay ? ' inert' : '' // a modal dialog keeps Tab and screen readers inside it
+  view.classList.toggle('show-keys', state.hint) // key hints are help: only when the player asked for help
   view.innerHTML = `
     ${noticeHtml()}
     <main class="screen screen-${ui.tab}" data-tab="${ui.tab}"${inert}>${screen()}</main>
@@ -596,18 +597,15 @@ function actionButtons(doName, allowed, locked = false) {
 
 // The layout never changes between turns (that made the screen jump): the bet line and chips always
 // stay, only the bottom row swaps between Clear/Rebet/Deal and the Actions, and both are the same height.
+// The betting panel and the action panel are stacked in one grid cell and only one is visible, so the
+// area keeps the taller one's height: no chips during a Round, and still nothing moves between turns.
 function playScreen() {
   const { round } = state
   const revealing = round?.phase === 'settled' && ui.dealerShown < round.dealer.length
-  const inRound = round?.phase === 'player'
-  const canBet = !inRound && !revealing
-  const staked = inRound || revealing ? round.hands.reduce((sum, hand) => sum + hand.bet, 0) : state.pendingBet
-  let bottom = bettingRow()
-  if (inRound) bottom = actionButtons('act', round.allowed)
-  else if (revealing) bottom = actionButtons('act', [])
+  const acting = round?.phase === 'player' || revealing
   return `
     <header class="bar">
-      <div class="stat muted">${t('cardsLeft', { n: state.cardsLeft })}</div>
+      <div class="shoe"><i aria-hidden="true"></i>${t('cardsLeft', { n: state.cardsLeft })}</div>
       <div class="bar-actions">
         <button class="toggle" data-do="autoBet" data-k="auto" aria-pressed="${ui.autoBet}">${t('autoBet')}<kbd>A</kbd></button>
         <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
@@ -619,10 +617,16 @@ function playScreen() {
       <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostHand()}</div>
     </section>
     <footer class="controls">
-      <div class="bet-line"><span class="label">${t('bet')}</span>${chipStack(staked)}<strong>${fmt(staked)}</strong></div>
-      ${chipTray(canBet)}
-      ${bottom}
-      <p class="keys muted small">${t(inRound ? 'keysAct' : 'keysBet')}</p>
+      <div class="panel${acting ? ' off' : ''}">
+        <div class="bet-line"><span class="label">${t('bet')}</span>${chipStack(state.pendingBet)}<strong>${fmt(state.pendingBet)}</strong></div>
+        ${chipTray(!acting)}
+        ${bettingRow()}
+        <p class="keys muted small">${t('keysBet')}</p>
+      </div>
+      <div class="panel acting${acting ? '' : ' off'}">
+        ${actionButtons('act', round?.phase === 'player' ? round.allowed : [])}
+        <p class="keys muted small">${t('keysAct')}</p>
+      </div>
     </footer>`
 }
 
@@ -735,10 +739,12 @@ function trainScreen() {
   let message = feltMessage('', t('feltTrain'), t('feltTrainSub'))
   if (feedback?.correct) message = feltMessage('good', `✓ ${t('correct')}`, t(`rule.${feedback.rule}`))
   else if (feedback) message = feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}`, t(`rule.${feedback.rule}`))
-  const controls =
-    feedback && !feedback.correct
-      ? `<button class="primary wide" data-do="next" data-k="next">${t('next')}<kbd>↵</kbd></button>`
-      : actionButtons('answer', situation.allowed, Boolean(feedback))
+  const needsNext = Boolean(feedback && !feedback.correct)
+  const controls = `
+    <div class="panel acting${needsNext ? ' off' : ''}">${actionButtons('answer', needsNext ? [] : situation.allowed, Boolean(feedback))}</div>
+    <div class="panel next${needsNext ? '' : ' off'}">
+      <button class="primary wide" data-do="next" data-k="next" ${needsNext ? '' : 'disabled'}>${t('next')}<kbd>↵</kbd></button>
+    </div>`
   return `${header}
     <section class="table">
       <div class="dealer"><div class="label">${t('dealer')}</div><div class="cards">${up}</div></div>
