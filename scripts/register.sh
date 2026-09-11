@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-time registration of Blackjack Lab on Usion. Needs a human: the deployed URL and the creator's token.
 #   Usage: scripts/register.sh https://<deployed-app-url>
+#          USION_SERVICE_ID=<id> scripts/register.sh https://<new-url>   (update an existing service)
 #   Token: $USION_TOKEN, or the first line of ./token.txt (gitignored; never commit or deploy it).
 set -euo pipefail
 
@@ -28,6 +29,17 @@ case "$TOKEN" in
     ;;
 esac
 
+# USION_SERVICE_ID=<id> updates that existing service in place instead of registering a new one.
+METHOD=POST
+if [[ -n "${USION_SERVICE_ID:-}" ]]; then
+  if [[ "$TOKEN" != usion_sk_* || ! "$USION_SERVICE_ID" =~ ^[a-z0-9-]+$ ]]; then
+    echo "Updating needs a usion_sk_ registry token and a plain service id" >&2
+    exit 1
+  fi
+  METHOD=PUT
+  ENDPOINT="$API_URL/registry/services/my/$USION_SERVICE_ID"
+fi
+
 BODY=$(cat <<JSON
 {
   "name": "Blackjack Lab",
@@ -43,9 +55,9 @@ BODY=$(cat <<JSON
 JSON
 )
 
-echo "POST $ENDPOINT"
+echo "$METHOD $ENDPOINT"
 # The token goes in via stdin so it never shows up in the process list.
 printf 'Authorization: Bearer %s\n' "$TOKEN" |
-  curl --fail-with-body -sS -X POST "$ENDPOINT" -H @- -H 'Content-Type: application/json' --data "$BODY"
+  curl --fail-with-body -sS -X "$METHOD" "$ENDPOINT" -H @- -H 'Content-Type: application/json' --data "$BODY"
 echo
 echo "Done. Read the service back and check the leaderboard block was stored (see README)."

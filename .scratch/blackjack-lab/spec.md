@@ -304,18 +304,18 @@ Pairs:
 
 ### Deployment and registration
 
-- **Deploy:** only the app's own directory (entry page, stylesheet, engine, shell) goes to Vercel as static files with no build step. Tests, docs, `.scratch` and the token file live outside it and are never uploaded.
+- **Deploy:** only the app's own public files (entry page, stylesheet, engine, shell, strings) are published, as static files with no build step, to GitHub Pages through a deploy-only repo (ADR 0006). Tests, docs, `.scratch` and the token file are never uploaded.
 - **Registration:** the service is registered once through the Usion registry API with the creator's token. The fields are:
   - name: "Blackjack Lab"
   - service type: game
-  - `iframe_url`: the Vercel URL
+  - `iframe_url`: the GitHub Pages URL
   - cost: 0
   - genre: strategy
   - tags: blackjack, cards, strategy, trainer
   - published: yes
   - guest access: the default (open)
   - leaderboard: enabled, order descending, mode best, metric score, `max_score` 10000
-- **Updates:** a Vercel redeploy updates the app in place. Metadata changes go through the registry update endpoint.
+- **Updates:** re-running the deploy script updates the app in place. Metadata and URL changes go through the registry update endpoint (`PUT /registry/services/my/{id}`).
 
 ## Testing Decisions
 
