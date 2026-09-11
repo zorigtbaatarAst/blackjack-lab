@@ -21,6 +21,7 @@ const ACTIONS = ['hit', 'stand', 'double', 'split']
 const ACTION_KEYS = { hit: 'h', stand: 's', double: 'd', split: 'p' } // desktop shortcuts; Split is P, not S
 const INIT_TIMEOUT_MS = 8000 // the SDK's own recommendation; timing out inside Usion means an unsaved session
 const AUTO_ADVANCE_MS = 600
+const HAND_RESULT_MS = 1200 // a finished training hand stays on screen this long before the next deals
 const AUTO_DEAL_MS = 1500 // Auto bet: time to read the result before the next Round deals itself
 const REVEAL_MS = 450
 const TOAST_MS = 2600
@@ -51,6 +52,7 @@ const ui = {
   roundSeen: new Set(), // card keys already on screen: only new cards animate in
   drillSeen: new Set(),
   situationSerial: 0,
+  advanceToken: 0, // invalidates a pending auto-advance when anything else happens first
   autoBet: false, // re-deal the same Bet after every Round; session-only, never saved
 }
 let revealTimer = null
@@ -229,9 +231,18 @@ function react(prev, event) {
   if (feedback?.correct) announce(t('correct'))
   else if (feedback) announce(`${t('coachMistake', { action: actionName(feedback.book) })}. ${t(`rule.${feedback.rule}`)}`)
   if (state.streakEnded) onStreakEnded(state.streakEnded)
-  if (JSON.stringify(prev.drill?.situation) !== JSON.stringify(state.drill?.situation)) {
+  // New cards animate in once per training hand (not on every Decision): a new serial means a new hand.
+  const prevRound = prev.drill?.round
+  const round = state.drill?.round
+  const newHand =
+    prev.drill?.mode !== state.drill?.mode ||
+    (round && (!prevRound || (prevRound.phase === 'settled' && round.phase === 'player')))
+  if (newHand) {
     ui.situationSerial++
     ui.drillSeen.clear()
+  }
+  if (event.type === 'answer' && round?.phase === 'settled') {
+    announce(round.hands.map((hand) => t(`result.${hand.result}`)).join(' · '))
   }
   // Also on startDrill: returning to a correctly answered Situation must still move on, or the drill is stuck.
   if ((event.type === 'answer' || event.type === 'startDrill') && state.drill?.feedback?.correct) scheduleAdvance()
@@ -290,10 +301,12 @@ function scheduleAutoDeal() {
 
 function scheduleAdvance() {
   clearTimeout(advanceTimer)
-  const serial = ui.situationSerial
+  const token = ++ui.advanceToken
+  // Mid-hand the next Decision comes quickly; once the hand is over, leave time to read the result.
+  const delay = state.drill.round?.phase === 'settled' ? HAND_RESULT_MS : AUTO_ADVANCE_MS
   advanceTimer = setTimeout(() => {
-    if (ui.situationSerial === serial && state.drill?.feedback?.correct) dispatch({ type: 'next' })
-  }, AUTO_ADVANCE_MS)
+    if (ui.advanceToken === token && state.drill?.feedback?.correct) dispatch({ type: 'next' })
+  }, delay)
 }
 
 // Screen readers only reliably announce changes to a live region that already exists.
@@ -648,7 +661,7 @@ function playScreen() {
     <section class="table">
       ${dealerHtml(round)}
       ${playMessage(revealing)}
-      <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostHand()}</div>
+      <div class="hands${handsClass(round)}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostHand()}</div>
     </section>
     <footer class="controls">
       <div class="panel${acting ? ' off' : ''}">
@@ -689,6 +702,13 @@ function dealerHtml(round) {
     <div class="label">${t('dealer')}${complete ? ` · <strong>${totalLabel(round.dealer)}</strong>` : ''}</div>
     <div class="cards">${cards.join('')}</div>
   </div>`
+}
+
+// Smaller cards once a Split puts several Hands side by side, so they never wrap into a second row.
+function handsClass(round) {
+  const count = round?.hands.length ?? 1
+  if (count > 2) return ' many'
+  return count === 2 ? ' split' : ''
 }
 
 // Outlines where the cards will land, so an empty table still reads as a table.
@@ -767,28 +787,50 @@ function trainScreen() {
         <button data-do="drillMode" data-mode="weighted" data-k="back-to-drill">${t('backToDrill')}</button>
       </section>`
   }
-  const { situation, feedback } = drill
-  const up = cardFace(situation.upcard, `up-${ui.situationSerial}`, ui.drillSeen)
-  const cards = situation.cards.map((card, i) => cardFace(card, `p${i}-${ui.situationSerial}`, ui.drillSeen))
-  let message = feltMessage('', t('feltTrain'), t('feltTrainSub'))
-  if (feedback?.correct) message = feltMessage('good', `✓ ${t('correct')}`, t(`rule.${feedback.rule}`))
-  else if (feedback) message = feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}`, t(`rule.${feedback.rule}`))
+  const { round, feedback } = drill
+  const locked = Boolean(feedback) || round.phase === 'settled'
   const needsNext = Boolean(feedback && !feedback.correct)
   const controls = `
-    <div class="panel acting${needsNext ? ' off' : ''}">${actionButtons('answer', needsNext ? [] : situation.allowed, Boolean(feedback))}</div>
+    <div class="panel acting${needsNext ? ' off' : ''}">${actionButtons('answer', locked ? [] : round.allowed)}</div>
     <div class="panel next${needsNext ? '' : ' off'}">
       <button class="primary wide" data-do="next" data-k="next" ${needsNext ? '' : 'disabled'}>${t('next')}<kbd>↵</kbd></button>
     </div>`
   return `${header}
     <section class="table">
-      <div class="dealer"><div class="label">${t('dealer')}</div><div class="cards">${up}</div></div>
-      ${message}
-      <div class="hands"><div class="hand">
-        <div class="cards">${cards.join('')}</div>
-        <div class="meta">${t('yourHand')} · <strong>${totalLabel(situation.cards)}</strong></div>
-      </div></div>
+      ${trainDealerHtml(round)}
+      ${trainMessage(round, feedback)}
+      <div class="hands${handsClass(round)}">${round.hands.map((hand, i) => trainHandHtml(round, hand, i)).join('')}</div>
     </section>
     <footer class="controls">${controls}<p class="keys muted small">${t('keysTrain')}</p></footer>`
+}
+
+// The training table: the hole card stays face down while you decide and turns over when your hand is done.
+function trainDealerHtml(round) {
+  const key = (i) => `t${ui.situationSerial}-d${i}`
+  const cards =
+    round.phase === 'player'
+      ? [cardFace(round.dealer[0], key(0), ui.drillSeen), cardBack(key('back'), ui.drillSeen)]
+      : round.dealer.map((card, i) => cardFace(card, key(i), ui.drillSeen, i === 1 ? 'flip' : 'enter'))
+  const total = round.phase === 'settled' ? ` · <strong>${totalLabel(round.dealer)}</strong>` : ''
+  return `<div class="dealer"><div class="label">${t('dealer')}${total}</div><div class="cards">${cards.join('')}</div></div>`
+}
+
+function trainHandHtml(round, hand, i) {
+  const active = round.phase === 'player' && i === round.active
+  const cards = hand.cards.map((card, j) => cardFace(card, `t${ui.situationSerial}-h${i}-${j}`, ui.drillSeen))
+  const result = round.phase === 'settled' ? ` <span class="badge ${hand.result}">${t(`result.${hand.result}`)}</span>` : ''
+  return `<div class="hand${active ? ' active' : ''}">
+    <div class="cards">${cards.join('')}</div>
+    <div class="meta"><strong>${totalLabel(hand.cards)}</strong>${result}</div>
+  </div>`
+}
+
+// The fixed felt slot: the last Decision's feedback (plus the result once the hand is over), else the prompt.
+function trainMessage(round, feedback) {
+  const result = round.phase === 'settled' ? ` · ${round.hands.map((hand) => t(`result.${hand.result}`)).join(' · ')}` : ''
+  if (feedback?.correct) return feltMessage('good', `✓ ${t('correct')}${result}`, t(`rule.${feedback.rule}`))
+  if (feedback) return feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}${result}`, t(`rule.${feedback.rule}`))
+  return feltMessage('', t('feltTrain'), t('feltTrainSub'))
 }
 
 // ------------------------------------------------------------------ Improve

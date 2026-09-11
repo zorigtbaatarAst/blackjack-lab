@@ -532,7 +532,7 @@ button.wide {
   min-height: 0;
   /* Dealer | message slot | player: equal outer rows pin the slot in the middle whatever the cards do. */
   display: grid;
-  grid-template-rows: 1fr auto 1fr;
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); /* minmax(0,…): tall Hands can't push the slot */
   align-items: center;
   gap: 10px;
   padding: 14px 10px;
@@ -690,6 +690,12 @@ button.wide {
 }
 .hands.many {
   --card-w: clamp(34px, min(10vw, 8vh), 80px);
+}
+@media (max-width: 600px) {
+  /* Two split Hands must fit side by side on a phone, or they wrap into a second row. */
+  .hands.split {
+    --card-w: clamp(36px, 11vw, 60px);
+  }
 }
 .hand {
   padding: 6px 8px;
