@@ -79,7 +79,7 @@ Improve shows the counting accuracy and the Best sprint.
 
 - Its phases are ready → running → over. Start is allowed from ready or over.
 - **Start:** resets the score and the misses, and shows the first card.
-- **Tag (value):**
+- **Answer (Count value):**
   - It needs a running sprint and a value of +1, 0 or −1.
   - A right value adds 1 to the score.
   - A wrong one adds a miss and exposes it (the card and its right value).
@@ -175,7 +175,7 @@ Improve shows the counting accuracy and the Best sprint.
   - While dealing: the speed switch, Slow / Normal / Fast, with keys 1 2 3.
   - For the Running count and the True count: a stepper, − [value] + OK.
     - For the Running count it starts at the last Running count revealed (0 after a reshuffle). For the True count it starts at 0.
-    - Keys: ←/→ or −/+ to adjust, digits and a minus sign to type, Backspace to edit, Enter to answer.
+    - Keys: ←/→ to adjust, digits and a minus sign to type, Backspace to edit, Enter to answer.
   - For the Bet: eight buttons, 1 to 8, with keys 1–8.
   - After a miss: Next.
   - A right answer moves on after 0.6 s. A wrong one waits for Next or Enter.
@@ -208,7 +208,7 @@ Improve shows the counting accuracy and the Best sprint.
 - **Values drill:**
   - Every rank gets the right Count value.
   - Score and misses; the Best sprint and "new best" (a lower score keeps the old best).
-  - A tag outside a running sprint is invalid, and so is a value other than +1, 0 or −1.
+  - An answer outside a running sprint is invalid, and so is a value other than +1, 0 or −1.
 - **Count drill, dealing:**
   - Rounds are auto-played by the Book: a stacked 16 against a 10 hits, and a pair of 8s splits.
   - Peek ends the round on a dealer Blackjack.
