@@ -582,14 +582,15 @@ function playScreen() {
     </header>
     <section class="table">
       ${dealerHtml(round)}
-      <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ''}</div>
+      ${feltPrint(t('feltPays'), t('feltRule'))}
+      <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostCards()}</div>
     </section>
     <div class="coach">${coachHtml(revealing)}</div>
     <footer class="controls">${controls}</footer>`
 }
 
 function dealerHtml(round) {
-  if (!round) return `<div class="dealer"><div class="label">${t('dealer')}</div><div class="cards empty-row"></div></div>`
+  if (!round) return `<div class="dealer"><div class="label">${t('dealer')}</div>${ghostCards()}</div>`
   const shown = round.phase === 'player' ? 1 : ui.dealerShown
   const cards = round.dealer.map((card, i) => {
     if (i < shown) return cardFace(card, `d${i}`, ui.roundSeen, i === 1 ? 'flip' : 'enter') // the hole card turns over
@@ -600,6 +601,28 @@ function dealerHtml(round) {
     <div class="label">${t('dealer')}${complete ? ` · <strong>${totalLabel(round.dealer)}</strong>` : ''}</div>
     <div class="cards">${cards.join('')}</div>
   </div>`
+}
+
+// Outlines where the cards will land, so an empty table still reads as a table.
+function ghostCards() {
+  return '<div class="cards" aria-hidden="true"><div class="card ghost"></div><div class="card ghost"></div></div>'
+}
+
+function feltPrint(title, subtitle) {
+  return `<div class="felt-print" aria-hidden="true"><strong>${title}</strong><span>${subtitle}</span></div>`
+}
+
+// The Bet as real chips: greedy from the biggest denomination, capped so a big Bet stays a neat stack.
+function chipStack(amount) {
+  const discs = []
+  let left = amount
+  for (const chip of [...CHIPS].reverse()) {
+    while (left >= chip && discs.length < 8) {
+      discs.push(chip)
+      left -= chip
+    }
+  }
+  return `<span class="stack" aria-hidden="true">${discs.map((chip) => `<span class="disc chip-${chip}"></span>`).join('')}</span>`
 }
 
 function handHtml(hand, i, revealing) {
@@ -632,7 +655,7 @@ function bettingHtml() {
   )
   const canRebet = state.canRebet && state.pendingBet !== state.lastBet
   return `
-    <div class="bet-line"><span class="label">${t('bet')}</span><strong>${fmt(state.pendingBet)}</strong></div>
+    <div class="bet-line"><span class="label">${t('bet')}</span>${chipStack(state.pendingBet)}<strong>${fmt(state.pendingBet)}</strong></div>
     <div class="chips">${chips.join('')}</div>
     <div class="row">
       <button data-do="clearBet" data-k="clear" ${state.pendingBet > 0 ? '' : 'disabled'}>${t('clear')}</button>
@@ -675,6 +698,7 @@ function trainScreen() {
   return `${header}
     <section class="table">
       <div class="dealer"><div class="label">${t('dealer')}</div><div class="cards">${up}</div></div>
+      ${feltPrint(t('feltTrain'), t('feltTrainSub'))}
       <div class="hands"><div class="hand">
         <div class="cards">${cards.join('')}</div>
         <div class="meta">${t('yourHand')} · <strong>${totalLabel(situation.cards)}</strong></div>
