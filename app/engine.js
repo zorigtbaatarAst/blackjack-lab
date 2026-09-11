@@ -2,8 +2,8 @@
 // Vocabulary: see CONTEXT.md. Rules: see .scratch/blackjack-lab/spec.md.
 
 const DECKS = 6
-const CUT_CARD = 234 // 75% of 312: reshuffle after the Round in which this many cards were dealt
-const START_BANKROLL = 1000
+const CUT_CARD = Math.floor(DECKS * 52 * 0.75) // reshuffle after the Round in which this many cards were dealt
+export const START_BANKROLL = 1000
 const MAX_HANDS = 4
 export const MIN_BET = 10
 export const MAX_BET = 500
@@ -15,7 +15,9 @@ const PAYOUT = { blackjack: 2.5, win: 2, push: 1, lose: 0, bust: 0 } // returned
 const SNAPSHOT_VERSION = 1
 const FIXES_TO_CLEAR = 2 // consecutive Book-matching Decisions that clear a Pending cell
 const MISTAKES_KEPT = 50
-const DRILL_MODES = ['weighted', 'mistakes']
+export const DRILL_MODES = ['weighted', 'mistakes']
+const ACTION_NAMES = ['hit', 'stand', 'double', 'split']
+const SOURCES = ['play', ...DRILL_MODES]
 const DRILL_EXCLUDED_ROWS = new Set(['H8', 'H17', 'S19', 'S20']) // trivial: never dealt by the Weighted drill
 const CLOSE_CALL_WEIGHT = 3
 const MULTI_CARD_SHARE = 0.15
@@ -85,6 +87,8 @@ function draw(s) {
 export function newLab(saved, { rng, cards = [] } = {}) {
   if (typeof rng !== 'function') throw new Error('newLab: rng function required')
   const progress = saved == null ? freshProgress() : restore(saved)
+  // Same rule as Settlement: a Bankroll that can't cover the minimum is Refilled, never left stuck.
+  if (progress.bankroll < MIN_BET) progress.bankroll = START_BANKROLL
   const s = {
     ...progress,
     rng,
@@ -123,12 +127,19 @@ function restore(saved) {
   if (typeof stats !== 'object' || stats === null) fail('stats')
   if (typeof stats.cells !== 'object' || stats.cells === null) fail('stats.cells')
   for (const [id, cell] of Object.entries(stats.cells)) {
-    if (!isCount(cell?.total) || !isCount(cell.correct) || !isCount(cell.pending)) fail(`cell ${id}`)
+    const ok = CELL_IDS.has(id) && isCount(cell?.total) && isCount(cell.correct) && isCount(cell.pending)
+    if (!ok) fail(`cell ${id}`)
   }
   if (!Array.isArray(stats.mistakes)) fail('stats.mistakes')
-  const isText = (x) => typeof x === 'string'
   for (const m of stats.mistakes) {
-    const ok = Array.isArray(m?.cards) && m.cards.every(isText) && [m.cell, m.upcard, m.chosen, m.book, m.source].every(isText)
+    const ok =
+      CELL_IDS.has(m?.cell) &&
+      Array.isArray(m.cards) &&
+      m.cards.every((rank) => RANKS.includes(rank)) &&
+      RANKS.includes(m.upcard) &&
+      ACTION_NAMES.includes(m.chosen) &&
+      ACTION_NAMES.includes(m.book) &&
+      SOURCES.includes(m.source)
     if (!ok) fail(`mistake ${JSON.stringify(m)}`)
   }
   const play = stats.play
@@ -195,10 +206,9 @@ const HANDLERS = {
 
   deal(s) {
     requireBetting(s)
-    if (!s.canDeal) invalid(`cannot deal a Bet of ${s.pendingBet}`)
     const bet = s.pendingBet
+    if (bet < MIN_BET || bet > s.bankroll) invalid(`cannot deal a Bet of ${bet}`)
     s.bankroll -= bet
-    s.lastBet = bet
     s.pendingBet = 0
     const first = draw(s)
     const upcard = draw(s)
@@ -209,6 +219,8 @@ const HANDLERS = {
       dealer: [upcard, hole],
       hands: [{ cards: [first, second], bet, fromSplit: false, splitAces: false, done: false }],
       active: 0,
+      bet,
+      hinted: s.hint, // once the Hint has been shown, no Decision in this Round is the player's own
       net: 0,
       allowed: [],
     }
@@ -221,7 +233,7 @@ const HANDLERS = {
     if (s.round?.phase !== 'player') invalid('act outside the player turn')
     if (!s.round.allowed.includes(action)) invalid(`${action} is not allowed now`)
     const hand = s.round.hands[s.round.active]
-    if (!s.hint) {
+    if (!s.round.hinted) {
       const { correct, book } = recordDecision(s, activeSituation(s), action, 'play')
       if (!correct) s.coachFlag = { chosen: action, book: book.action, rule: book.rule, cell: book.cell }
     }
@@ -231,6 +243,7 @@ const HANDLERS = {
 
   toggleHint(s) {
     s.hint = !s.hint
+    if (s.hint && s.round?.phase === 'player') s.round.hinted = true
   },
 
   resetStats(s) {
@@ -387,6 +400,7 @@ function settle(s) {
     else stats.play.losses++
   }
   s.bankroll += returned
+  s.lastBet = round.bet
   round.net = returned - staked
   stats.play.net += round.net
   round.phase = 'settled'
@@ -435,9 +449,8 @@ function derive(s) {
 function accuracyOf(cells) {
   const tally = () => ({ correct: 0, total: 0 })
   const accuracy = { overall: tally(), hard: tally(), soft: tally(), pairs: tally() }
-  const groupOf = { H: accuracy.hard, S: accuracy.soft, P: accuracy.pairs }
   for (const [id, cell] of Object.entries(cells)) {
-    for (const group of [accuracy.overall, groupOf[id[0]]]) {
+    for (const group of [accuracy.overall, accuracy[GROUP_OF_CLASS[id[0]]]]) {
       group.correct += cell.correct
       group.total += cell.total
     }
@@ -494,15 +507,24 @@ P10  S  S  S  S  S  S  S  S  S  S   never-tens
 PA   P  P  P  P  P  P  P  P  P  P   aces-eights
 `
 
+const GROUP_OF_CLASS = { H: 'hard', S: 'soft', P: 'pairs' }
+
 export const CHART_ROWS = BOOK.trim()
   .split('\n')
   .map((line) => {
     const [id, ...rest] = line.trim().split(/\s+/)
-    return { id, codes: rest.slice(0, UPCARDS.length), rule: rest[UPCARDS.length] }
+    return {
+      id,
+      group: GROUP_OF_CLASS[id[0]],
+      codes: rest.slice(0, UPCARDS.length),
+      cells: UPCARDS.map((up) => `${id}-${up}`),
+      rule: rest[UPCARDS.length],
+    }
   })
 
 const ROW = Object.fromEntries(CHART_ROWS.map((row) => [row.id, row]))
-const ACTION_OF_CODE = { H: 'hit', S: 'stand', D: 'double', Ds: 'double', P: 'split' }
+const CELL_IDS = new Set(CHART_ROWS.flatMap((row) => row.cells))
+export const ACTION_OF_CODE = { H: 'hit', S: 'stand', D: 'double', Ds: 'double', P: 'split' }
 
 function upcardColumn(rank) {
   return value(rank) === 10 ? '10' : rank
@@ -553,7 +575,7 @@ function isCloseCall(r, col) {
 const WEIGHTED_CELLS = CHART_ROWS.flatMap((row, r) =>
   DRILL_EXCLUDED_ROWS.has(row.id)
     ? []
-    : UPCARDS.map((up, col) => ({ cell: `${row.id}-${up}`, weight: isCloseCall(r, col) ? CLOSE_CALL_WEIGHT : 1 })),
+    : row.cells.map((cell, col) => ({ cell, weight: isCloseCall(r, col) ? CLOSE_CALL_WEIGHT : 1 })),
 )
 const WEIGHT_TOTAL = WEIGHTED_CELLS.reduce((sum, { weight }) => sum + weight, 0)
 
@@ -629,10 +651,10 @@ function multiCardRanks(total, soft, rng) {
   return null
 }
 
-function rankFor(value, rng) {
-  if (value === 10) return pick(TEN_RANKS, rng)
-  if (value === 11) return 'A'
-  return String(value)
+function rankFor(points, rng) {
+  if (points === 10) return pick(TEN_RANKS, rng)
+  if (points === 11) return 'A'
+  return String(points)
 }
 
 function cardOf(rank, rng) {

@@ -5,4 +5,4 @@ Usion's game checklist says "if the game could be played with other people, buil
 ## Consequences
 
 - The Round engine stays pure state plus Actions, so a host can run it for a shared table later without a rewrite.
-- `Usion.getLaunchParams().mode` is still honoured. `'single'` drops straight onto the Play table.
+- The app never needs to branch on `Usion.getLaunchParams().mode`: it is solo-only, so every launch is `'single'`. It opens ready to play on the last-used tab, which is the Play table on first launch.

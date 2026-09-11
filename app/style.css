@@ -650,3 +650,17 @@ button.wide {
     animation: none;
   }
 }
+
+.card.flip {
+  animation: flip 0.3s ease-out both;
+}
+@keyframes flip {
+  from {
+    transform: rotateY(90deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.flip {
+    animation: none;
+  }
+}

@@ -1,6 +1,17 @@
 // Blackjack Lab shell: rendering, i18n, Usion SDK, storage, leaderboard, timers.
 // Every game rule lives in engine.js; this file only turns state into pixels and taps into events.
-import { newLab, step, snapshot, handTotal, CHART_ROWS, UPCARDS, CHIPS } from './engine.js'
+import {
+  newLab,
+  step,
+  snapshot,
+  handTotal,
+  ACTION_OF_CODE,
+  CHART_ROWS,
+  CHIPS,
+  DRILL_MODES,
+  START_BANKROLL,
+  UPCARDS,
+} from './engine.js'
 import { STRINGS } from './strings.js'
 
 const STORAGE_KEY = 'lab'
@@ -21,7 +32,7 @@ let usion = null // window.Usion once init fired; null outside the host
 let canRank = false // logged-in Usion user; Guests never submit
 let persist = false // stays false after a failed load, so real progress is never overwritten
 let lang = 'en'
-let number = new Intl.NumberFormat('en', { maximumFractionDigits: 1 })
+let numberFormat = new Intl.NumberFormat('en', { maximumFractionDigits: 1 })
 let state = null
 
 const ui = {
@@ -31,6 +42,8 @@ const ui = {
   toast: null,
   board: null, // Improve leaderboard: { status, view, friends, top, me }
   dealerShown: Infinity, // dealer cards revealed so far in the Settlement animation
+  bankrollShown: null, // the pre-Settlement Bankroll, shown until the reveal ends so it can't spoil the result
+  refillPending: false, // the Refill toast waits for the reveal too
   roundSeen: new Set(), // card keys already on screen: only new cards animate in
   drillSeen: new Set(),
   situationSerial: 0,
@@ -45,21 +58,28 @@ let pendingSave = null
 
 boot().catch((err) => {
   console.error('[lab] boot failed', err)
-  app.textContent = 'Blackjack Lab failed to start. Please reopen it.'
+  app.textContent = t('bootFailed')
 })
 
 // ------------------------------------------------------------------ boot and platform
 
+function pickLanguage(code) {
+  return String(code ?? '').toLowerCase().startsWith('mn') ? 'mn' : 'en'
+}
+
 async function boot() {
-  app.innerHTML = `<p class="boot">${STRINGS.en.loading}</p>`
+  // Before init the host hasn't said which language; the browser's is the best guess for this one line.
+  app.innerHTML = `<p class="boot">${STRINGS[pickLanguage(navigator.language)].loading}</p>`
   const config = await initUsion()
   if (config) usion = window.Usion
-  lang = String(config?.language ?? usion?.getLanguage?.() ?? navigator.language ?? 'en').toLowerCase().startsWith('mn') ? 'mn' : 'en'
-  number = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 })
+  // Outside Usion the spec says English, whatever the browser prefers.
+  lang = usion ? pickLanguage(config.language ?? usion.getLanguage?.()) : 'en'
+  numberFormat = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 })
   document.documentElement.lang = lang
   const theme = config?.theme ?? usion?.getTheme?.()
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme
   const userId = String(config?.userId ?? usion?.user?.getId?.() ?? '')
+  if (usion && userId === '') console.warn('[lab] Usion gave no user id; treating this visitor as a Guest')
   canRank = usion !== null && userId !== '' && !userId.startsWith('guest_')
 
   const loaded = await loadProgress()
@@ -80,7 +100,10 @@ async function boot() {
 function initUsion() {
   return new Promise((resolve) => {
     if (typeof window.Usion?.init !== 'function') return resolve(null)
-    const timer = setTimeout(() => resolve(null), INIT_TIMEOUT_MS)
+    const timer = setTimeout(() => {
+      console.warn(`[lab] Usion.init did not fire within ${INIT_TIMEOUT_MS} ms; running in preview mode`)
+      resolve(null)
+    }, INIT_TIMEOUT_MS)
     window.Usion.init((config) => {
       clearTimeout(timer)
       resolve(config ?? {})
@@ -163,8 +186,11 @@ function react(prev, event) {
     ui.dealerShown = Infinity
   }
   const settledNow = state.round?.phase === 'settled' && (event.type === 'deal' || prev.round?.phase === 'player')
-  if (settledNow) startReveal()
-  if (state.refilled) showToast(t('refilled'))
+  if (settledNow) {
+    ui.bankrollShown = prev.bankroll
+    ui.refillPending = state.refilled
+    startReveal()
+  }
   if (state.streakEnded) onStreakEnded(state.streakEnded)
   if (JSON.stringify(prev.drill?.situation) !== JSON.stringify(state.drill?.situation)) {
     ui.situationSerial++
@@ -179,15 +205,25 @@ function startReveal() {
   const total = state.round.dealer.length
   if (reducedMotion) {
     ui.dealerShown = total
+    finishReveal()
     return
   }
   ui.dealerShown = 1
   const tick = () => {
     ui.dealerShown++
-    render()
     if (ui.dealerShown < total) revealTimer = setTimeout(tick, REVEAL_MS)
+    else finishReveal()
+    render()
   }
   revealTimer = setTimeout(tick, REVEAL_MS)
+}
+
+function finishReveal() {
+  ui.bankrollShown = null
+  if (ui.refillPending) {
+    ui.refillPending = false
+    showToast(t('refilled', { n: fmt(START_BANKROLL) }))
+  }
 }
 
 function scheduleAdvance() {
@@ -210,8 +246,10 @@ function showToast(text) {
 function switchTab(tab, { remember = true } = {}) {
   ui.tab = tab
   if (remember) rememberTab()
-  if (tab === 'train' && !state.drill) {
-    dispatch({ type: 'startDrill', mode: 'weighted' })
+  if (tab === 'train') {
+    // Always re-enter the current drill: an empty Mistakes drill picks up cells missed in Play meanwhile,
+    // while an unanswered Situation is kept (the engine never redeals one).
+    dispatch({ type: 'startDrill', mode: state.drill?.mode ?? 'weighted' })
     return
   }
   if (tab === 'improve' && canRank && ui.board?.status !== 'ready' && ui.board?.status !== 'loading') loadBoard()
@@ -262,6 +300,10 @@ function onClick(e) {
 
 // ------------------------------------------------------------------ leaderboard
 
+function fetchBoards() {
+  return Promise.all([usion.leaderboard.friends(), usion.leaderboard.top({ limit: 10 })]).then(([friends, top]) => ({ friends, top }))
+}
+
 async function onStreakEnded({ length, isNewBest }) {
   if (!canRank) return
   ui.board = null // stale after a submit; Improve reloads it
@@ -273,8 +315,7 @@ async function onStreakEnded({ length, isNewBest }) {
   try {
     const result = await usion.leaderboard.submit(length)
     if (!card) return
-    const [friends, top] = await Promise.all([usion.leaderboard.friends(), usion.leaderboard.top({ limit: 10 })])
-    Object.assign(card, { rank: result?.rank ?? null, friends, top, status: 'ready' })
+    Object.assign(card, { rank: result?.rank ?? null, ...(await fetchBoards()), status: 'ready' })
   } catch (err) {
     console.error('[lab] leaderboard submit failed', { length }, err)
     if (card) card.status = 'error'
@@ -287,12 +328,8 @@ async function loadBoard() {
   ui.board = board
   render()
   try {
-    const [friends, top, me] = await Promise.all([
-      usion.leaderboard.friends(),
-      usion.leaderboard.top({ limit: 10 }),
-      usion.leaderboard.me(),
-    ])
-    Object.assign(board, { status: 'ready', friends, top, me })
+    const [boards, me] = await Promise.all([fetchBoards(), usion.leaderboard.me()])
+    Object.assign(board, { status: 'ready', ...boards, me })
   } catch (err) {
     console.error('[lab] leaderboard load failed', err)
     board.status = 'error'
@@ -302,8 +339,15 @@ async function loadBoard() {
 
 // ------------------------------------------------------------------ rendering
 
+const warnedKeys = new Set()
+
 function t(key, vars = {}) {
-  const template = STRINGS[lang][key] ?? STRINGS.en[key] ?? key
+  const template = STRINGS[lang][key] ?? STRINGS.en[key]
+  if (template === undefined) {
+    if (!warnedKeys.has(key)) console.warn(`[lab] missing string ${key}`)
+    warnedKeys.add(key)
+    return key
+  }
   return template.replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? ''))
 }
 
@@ -311,8 +355,13 @@ function esc(value) {
   return String(value).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
 }
 
-const fmt = (n) => number.format(n)
-const signed = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + fmt(Math.abs(n))
+const fmt = (n) => numberFormat.format(n)
+
+function signed(n) {
+  if (n > 0) return `+${fmt(n)}`
+  if (n < 0) return `−${fmt(-n)}`
+  return fmt(0)
+}
 const pct = ({ correct, total }) => (total === 0 ? '—' : `${Math.round((correct / total) * 100)}%`)
 const actionName = (action) => t(`action.${action}`)
 
@@ -363,15 +412,17 @@ function tabBarHtml() {
 }
 
 function cardLabel(card) {
-  const rank = t(`rank.${card.rank}`) === `rank.${card.rank}` ? card.rank : t(`rank.${card.rank}`)
+  // Only face cards and aces have names; number cards read as their number.
+  const named = `rank.${card.rank}` in STRINGS.en
+  const rank = named ? t(`rank.${card.rank}`) : card.rank
   return t('cardOf', { rank, suit: t(`suit.${card.suit}`) })
 }
 
-function cardFace(card, key, seen) {
+function cardFace(card, key, seen, entrance = 'enter') {
   const isNew = !seen.has(key)
   seen.add(key)
   const red = card.suit === 'h' || card.suit === 'd'
-  return `<div class="card${red ? ' red' : ''}${isNew ? ' enter' : ''}" role="img" aria-label="${esc(cardLabel(card))}">
+  return `<div class="card${red ? ' red' : ''}${isNew ? ` ${entrance}` : ''}" role="img" aria-label="${esc(cardLabel(card))}">
     <span class="rank">${esc(card.rank)}</span><span class="suit">${SUIT_GLYPH[card.suit] ?? ''}</span></div>`
 }
 
@@ -383,7 +434,7 @@ function cardBack(key, seen) {
 
 function totalLabel(cards) {
   const { total, soft } = handTotal(cards)
-  return soft ? t('soft', { n: total }) : String(total)
+  return soft ? t('softTotal', { n: total }) : String(total)
 }
 
 function actionButtons(doName, allowed, locked = false) {
@@ -394,8 +445,10 @@ function actionButtons(doName, allowed, locked = false) {
   return `<div class="actions">${buttons.join('')}</div>`
 }
 
+const FLAG_ICON = { good: '✓', bad: '✗', hint: '💡' }
+
 function flagHtml(kind, title, rule) {
-  const icon = kind === 'good' ? '✓' : kind === 'bad' ? '✗' : '💡'
+  const icon = FLAG_ICON[kind]
   return `<div class="flag ${kind}"><strong>${icon} ${title}</strong>${rule ? `<small>${t(`rule.${rule}`)}</small>` : ''}</div>`
 }
 
@@ -409,7 +462,7 @@ function playScreen() {
   else if (revealing) controls = ''
   return `
     <header class="bar">
-      <div class="stat"><span class="label">${t('chips')}</span><strong>${fmt(state.bankroll)}</strong></div>
+      <div class="stat"><span class="label">${t('chips')}</span><strong>${fmt(revealing ? ui.bankrollShown : state.bankroll)}</strong></div>
       <div class="stat muted">${t('cardsLeft', { n: state.cardsLeft })}</div>
       <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
     </header>
@@ -425,7 +478,7 @@ function dealerHtml(round) {
   if (!round) return `<div class="dealer"><div class="label">${t('dealer')}</div><div class="cards empty-row"></div></div>`
   const shown = round.phase === 'player' ? 1 : ui.dealerShown
   const cards = round.dealer.map((card, i) => {
-    if (i < shown) return cardFace(card, `d${i}`, ui.roundSeen)
+    if (i < shown) return cardFace(card, `d${i}`, ui.roundSeen, i === 1 ? 'flip' : 'enter') // the hole card turns over
     return i === 1 ? cardBack('d1-back', ui.roundSeen) : ''
   })
   const complete = round.phase === 'settled' && shown >= round.dealer.length
@@ -479,15 +532,12 @@ function bettingHtml() {
 function trainScreen() {
   const { drill } = state
   if (!drill) return ''
-  const modes = ['weighted', 'mistakes'].map(
+  const modes = DRILL_MODES.map(
     (mode) =>
       `<button role="tab" aria-selected="${drill.mode === mode}" data-do="drillMode" data-mode="${mode}" data-k="mode-${mode}">${t(`drill.${mode}`)}</button>`,
   )
-  const streak =
-    drill.mode === 'weighted'
-      ? `<div class="stat"><span class="label">${t('streak')}</span><strong>${state.streak}</strong></div>
-         <div class="stat"><span class="label">${t('best')}</span><strong>${Math.max(state.bestStreak, state.streak)}</strong></div>`
-      : ''
+  const streak = `<div class="stat"><span class="label">${t('streak')}</span><strong>${state.streak}</strong></div>
+    <div class="stat"><span class="label">${t('best')}</span><strong>${Math.max(state.bestStreak, state.streak)}</strong></div>`
   const header = `<header class="bar"><div class="segmented" role="tablist">${modes.join('')}</div>${streak}</header>`
   if (drill.empty) {
     return `${header}
@@ -539,7 +589,7 @@ function accuracyHtml(accuracy) {
   const tile = (key, tally) =>
     `<div class="tile"><span class="label">${t(key)}</span><strong>${pct(tally)}</strong><span class="muted small">${t('ofDecisions', tally)}</span></div>`
   return `<div class="hero">${pct(accuracy.overall)}<span class="muted small">${t('ofDecisions', accuracy.overall)}</span></div>
-    <div class="tiles">${tile('hard', accuracy.hard)}${tile('soft_', accuracy.soft)}${tile('pairs', accuracy.pairs)}</div>`
+    <div class="tiles">${tile('group.hard', accuracy.hard)}${tile('group.soft', accuracy.soft)}${tile('group.pairs', accuracy.pairs)}</div>`
 }
 
 function boardHtml() {
@@ -568,18 +618,18 @@ function boardList(entries) {
   return `<ol class="board">${rows.join('')}</ol>`
 }
 
+// Chart row ids (H8…H17, S13…S20, P2…PA) as a player reads them: ≤8, 17+, A,7, 8,8.
 function rowLabel(id) {
   const n = id.slice(1)
   if (id === 'H8') return '≤8'
   if (id === 'H17') return '17+'
   if (id[0] === 'H') return n
-  if (id[0] === 'S') return `A,${n - 11}`
+  if (id[0] === 'S') return `A,${Number(n) - 11}`
   return n === 'A' ? 'A,A' : `${n},${n}`
 }
 
-function rowTitle(id) {
-  const group = { H: 'hard', S: 'soft_', P: 'pairs' }[id[0]]
-  return `${t(group)} ${rowLabel(id)}`
+function rowTitle(row) {
+  return `${t(`group.${row.group}`)} ${rowLabel(row.id)}`
 }
 
 function heatLevel(mistakeRate) {
@@ -590,18 +640,16 @@ function heatLevel(mistakeRate) {
   return 4
 }
 
-const CODE_ACTION = { H: 'hit', S: 'stand', D: 'double', Ds: 'double', P: 'split' }
-
 function chartHtml(cells) {
   const head = `<div class="hm-row hm-head"><span></span>${UPCARDS.map((up) => `<span>${up}</span>`).join('')}</div>`
   let group = null
   const rows = CHART_ROWS.map((row) => {
-    const heading = row.id[0] !== group ? `<div class="hm-group">${t({ H: 'hard', S: 'soft_', P: 'pairs' }[row.id[0]])}</div>` : ''
-    group = row.id[0]
+    const heading = row.group !== group ? `<div class="hm-group">${t(`group.${row.group}`)}</div>` : ''
+    group = row.group
     const cellsHtml = row.codes.map((code, col) => {
       const up = UPCARDS[col]
-      const cell = cells[`${row.id}-${up}`]
-      const vars = { row: rowTitle(row.id), up, action: actionName(CODE_ACTION[code]) }
+      const cell = cells[row.cells[col]]
+      const vars = { row: rowTitle(row), up, action: actionName(ACTION_OF_CODE[code]) }
       const level = cell ? heatLevel(1 - cell.correct / cell.total) : 'none'
       const label = cell ? t('chartCell', { ...vars, correct: cell.correct, total: cell.total }) : t('chartCellEmpty', vars)
       return `<span class="hm-cell hm-${level}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
@@ -609,7 +657,7 @@ function chartHtml(cells) {
     return `${heading}<div class="hm-row"><span class="hm-label">${rowLabel(row.id)}</span>${cellsHtml.join('')}</div>`
   })
   const legendSteps = [0, 1, 2, 3, 4].map((level) => `<span class="hm-cell hm-${level}"></span>`).join('')
-  const codes = ['H', 'S', 'D', 'P'].map((code) => `<b>${code}</b> ${actionName(CODE_ACTION[code])}`).join(' · ')
+  const codes = ['H', 'S', 'D', 'P'].map((code) => `<b>${code}</b> ${actionName(ACTION_OF_CODE[code])}`).join(' · ')
   return `<h2>${t('chartTitle')}</h2>
     <p class="muted small">${t('chartNote')}</p>
     <div class="heatmap">${head}${rows.join('')}</div>
@@ -629,7 +677,7 @@ function mistakesHtml(mistakes) {
   if (mistakes.length === 0) return `${title}<p class="muted">${t('noMistakes')}</p>`
   const items = mistakes.map(
     (m) => `<li>
-      <span class="mini-cards">${m.cards.map(miniCard).join('')} <span class="muted">vs</span> ${miniCard(m.upcard)}</span>
+      <span class="mini-cards">${m.cards.map(miniCard).join('')} <span class="muted">${t('versus')}</span> ${miniCard(m.upcard)}</span>
       <span>${esc(t('mistakeLine', { chosen: actionName(m.chosen), book: actionName(m.book) }))}</span>
       <span class="muted small">${esc(t(`source.${m.source}`))}</span>
     </li>`,

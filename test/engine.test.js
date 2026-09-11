@@ -104,6 +104,13 @@ test('a Busted Hand loses and the dealer does not draw', () => {
   assert.equal(s.bankroll, 990)
 })
 
+test('a Busted Hand loses even when the dealer Busts', () => {
+  // 8,8 vs 6 split: 8,4 hits K and Busts; 8,10 stands; dealer 6,10 draws 10 and Busts.
+  const s = run(lab(['8', '6', '8', '10', '4', '10', 'K', '10']), deal, act('split'), act('hit'), act('stand'))
+  assert.deepEqual(s.round.hands.map((h) => h.result), ['bust', 'win'])
+  assert.equal(s.round.dealer.length, 3)
+})
+
 test('dealer Bust pays every standing Hand', () => {
   const s = run(lab(['10', '6', '8', '10', '10']), deal, act('stand'))
   assert.equal(s.round.hands[0].result, 'win')
@@ -330,6 +337,14 @@ test('bookAction matches the Book in all 280 cells', () => {
   }
 })
 
+test('the chart layout carries each row group and its cell ids', () => {
+  const h16 = CHART_ROWS.find((r) => r.id === 'H16')
+  assert.equal(h16.group, 'hard')
+  assert.equal(h16.cells[8], 'H16-10')
+  assert.equal(CHART_ROWS.find((r) => r.id === 'S18').group, 'soft')
+  assert.equal(CHART_ROWS.find((r) => r.id === 'PA').group, 'pairs')
+})
+
 test('the exported chart is the Book', () => {
   for (const [row, ...codes] of EXPECTED_CHART) {
     assert.deepEqual(CHART_ROWS.find((r) => r.id === row).codes, codes, row)
@@ -430,6 +445,13 @@ test('Hint shows the Book action before acting, and hinted Decisions are not rec
   assert.deepEqual(after.stats.mistakes, [])
 })
 
+test('a Round in which the Hint was shown records no Decisions, even after turning it off', () => {
+  const peeked = run(lab(['10', '10', '6', '8', '4']), deal, toggleHint, toggleHint, act('hit'))
+  assert.deepEqual(peeked.stats.cells, {})
+  const fromDeal = run(lab(['10', '10', '6', '8', '4']), toggleHint, deal, toggleHint, act('hit'))
+  assert.deepEqual(fromDeal.stats.cells, {})
+})
+
 test('no Hint when the Hint is off', () => {
   assert.equal(run(lab(['10', '10', '6', '8']), deal).hintAction, null)
 })
@@ -458,10 +480,11 @@ test('accuracy is derived overall and by category', () => {
 
 // ---------------------------------------------------------------- snapshot
 
-test('mid-Round the snapshot still holds the pre-deal Bankroll (the Round would be voided)', () => {
-  const s = run(lab(['8', '9', '8', '10', '3', '2']), deal, act('split'))
-  assert.equal(s.bankroll, 980)
+test('mid-Round the snapshot keeps the pre-deal Bankroll and last Bet (the Round would be voided)', () => {
+  const s = run(lab(['8', '9', '8', '10', '3', '2']), clearBet, bet(25), deal, act('split'))
+  assert.equal(s.bankroll, 950)
   assert.equal(snapshot(s).bankroll, 1000)
+  assert.equal(snapshot(s).lastBet, 10)
 })
 
 test('newLab(snapshot(state)) round-trips all progress', () => {
@@ -480,6 +503,16 @@ test('unknown versions and malformed snapshots are rejected', () => {
   assert.throws(() => lab([], saved({ stats: null })), /stats/)
   assert.throws(() => lab([], saved({ stats: { cells: { 'H16-10': { total: 'x' } }, mistakes: [], play: saved().stats.play } })), /cell/)
   assert.throws(() => lab([], saved({ stats: { cells: {}, mistakes: [{ cell: 'H16-10' }], play: saved().stats.play } })), /mistake/)
+  const offChart = { 'H99-Z': { total: 1, correct: 0, pending: 1 } }
+  assert.throws(() => lab([], saved({ stats: { ...saved().stats, cells: offChart } })), /cell/)
+  const badAction = { cell: 'H16-10', cards: ['10', '6'], upcard: '10', chosen: 'surrender', book: 'hit', source: 'play' }
+  assert.throws(() => lab([], saved({ stats: { ...saved().stats, mistakes: [badAction] } })), /mistake/)
+})
+
+test('a saved Bankroll below the table minimum is Refilled on load', () => {
+  const s = lab([], saved({ bankroll: 5 }))
+  assert.equal(s.bankroll, 1000)
+  assert.equal(s.canDeal, true)
 })
 
 test('Reset stats clears cells, Mistakes and Play stats, and keeps Chips, Hint and Streaks', () => {

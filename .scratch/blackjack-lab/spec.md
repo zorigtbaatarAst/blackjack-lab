@@ -22,7 +22,7 @@ The app opens straight onto the table, follows Usion's theme and language (Engli
 
 ### Play: table and betting
 
-1. As a player, I want the app to open straight onto the table with my last Bet ready, so that I can start a Round with one tap.
+1. As a player, I want the app to open ready to play, on the tab I last used (the table, with my last Bet ready, on first launch), so that I can start with one tap.
 2. As a first-time player, I want to start with 1,000 Chips and a Bet of 10 ready, so that I can play right away without any setup.
 3. As a player, I want to add 10, 25, 100 and 500 chips to my Bet with single taps, so that I can size a Bet with one thumb.
 4. As a player, I want chips that would push my Bet above 500, or above my Bankroll, to be disabled, so that I can never place an invalid Bet.
@@ -161,7 +161,7 @@ The app opens straight onto the table, follows Usion's theme and language (Engli
 - **Double:** any first two cards, including after a Split; exactly one more card; the Bankroll must cover it.
 - **Split:** any two cards of equal value (ten-value cards count as equal), up to four Hands in total, and the Bankroll must cover it. Split aces get one card each and can't be re-split. 21 on a split Hand is not a Blackjack.
 - Hands auto-stand on 21 (hard or soft) and after split aces are dealt. A Busted Hand loses regardless of the dealer. The dealer doesn't draw if every player Hand has Busted.
-- **Bet lifecycle:** the Bet is deducted from the live Bankroll at deal, and again for each Double or Split. The snapshot always reports the Bankroll as of the last Settlement. That is why a Round interrupted by a reload is voided and its Bet effectively refunded (ADR 0004).
+- **Bet lifecycle:** the Bet is deducted from the live Bankroll at deal, and again for each Double or Split. It becomes the last Bet only at Settlement. The snapshot always reports the Bankroll and last Bet as of the last Settlement. That is why a Round interrupted by a reload is voided and its Bet effectively refunded (ADR 0004). Decisions are saved as they're made, voided Round or not.
 - **Refill:** at Settlement, if the Bankroll is below 10, it is reset to 1,000 and the Refill signal is raised. Refills don't count toward net Chips.
 - **Pending Bet:** it is pre-filled with the last Bet, or 10 on first launch or if the last Bet isn't affordable. That happens at launch and after every Settlement, so Deal is always one tap away. Clear empties it, and Rebet restores the last Bet.
 
@@ -241,7 +241,7 @@ Pairs:
 
 - **Coach:** on every Play `act`, the engine works out the Book action for the Situation as it stood before the Action.
   - With the Hint off, it records the Decision and raises the Coach flag only on a Mistake.
-  - With the Hint on, the Book action is shown before the player acts, and the Decision isn't recorded.
+  - With the Hint on, the Book action is shown before the player acts. Once the Hint has been shown in a Round, even if it's turned off again, no Decision in that Round is recorded.
   - Auto-stand Hands and split aces involve no Decision.
 - **The Hint exists only in Play.** Drills have no Hint, which protects the Streak.
 - **Weighted drill:**
@@ -266,7 +266,7 @@ Pairs:
 ### Persistence
 
 - **Format:** one storage key holds the snapshot, as versioned JSON. It contains the version (1), settled Bankroll, last Bet, Hint setting, Streak, Best streak, per-cell stats, recent Mistakes and Play stats. It's a few kilobytes, far under Usion's 512 KB per-value limit. The shell keeps the last-used tab in a separate small key.
-- **Loading:** the shell loads the snapshot once, after `Usion.init` fires, and builds the Lab from it. `newLab` rejects a snapshot it can't validate or whose version it doesn't know.
+- **Loading:** the shell loads the snapshot once, after `Usion.init` fires, and builds the Lab from it. `newLab` rejects a snapshot it can't validate (including cell ids that aren't on the chart and unknown Actions or sources) or whose version it doesn't know. A saved Bankroll below the table minimum is Refilled on load rather than rejected.
 - **Writes:** the shell saves after any step that changes persisted data (Settlement, a recorded Decision, Hint toggle, reset). Writes are coalesced: at most one is in flight, and the newest queued snapshot replaces older ones.
 - **Save failure:** the shell logs it with context and shows a non-blocking "progress not saved" notice, then retries on the next save.
 - **Load failure or a rejected snapshot:** the session runs on defaults **without ever saving**, and a notice says progress won't be saved. A transient failure must never overwrite real progress.
@@ -284,7 +284,7 @@ Pairs:
   - Guests (user id starting `guest_`) never submit, which avoids the host's mid-drill login prompt. They see a "Log in to rank" note instead.
 - **Back button:** the host back claim is one-shot, so it's re-claimed on every screen change. Train and Improve go back to Play, and a card or dialog closes. Play releases the button so the host shows close.
 - **The "not a web page" reset:** viewport locked, no selection, no callout, no tap highlight, no double-tap zoom, no overscroll.
-- **Outside the Usion host** (plain browser, local development): if the SDK is missing or init doesn't fire within about 2 s, the app boots with English, the system colour scheme, no persistence and no leaderboard.
+- **Outside the Usion host** (plain browser, local development): if the SDK is missing or init doesn't fire within 3 s, the app boots with English, the system colour scheme, no persistence and no leaderboard. The timeout was 2 s; 3 s gives slow mobile hosts room, since timing out inside Usion means an unsaved session.
 
 ### UI
 
@@ -351,7 +351,7 @@ Pairs:
 - **Stats and snapshot cover:**
   - Accuracy by category; recent Mistakes capped at 50, newest first.
   - `resetStats` clears exactly what it should.
-  - Mid-Round `snapshot` equals the pre-deal snapshot (voided Round).
+  - A mid-Round `snapshot` keeps the pre-deal Bankroll and last Bet (voided Round).
   - `newLab(snapshot(state))` round-trips; invalid or unknown-version snapshots are rejected.
 - **The shell is not unit-tested.** Each ticket that touches it closes with a manual checklist:
   - In a plain browser: boots with defaults.
