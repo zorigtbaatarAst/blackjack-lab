@@ -265,7 +265,7 @@ Pairs:
 
 ### Persistence
 
-- **Format:** one storage key holds the snapshot, as versioned JSON. It contains the version (1), settled Bankroll, last Bet, Hint setting, Streak, Best streak, per-cell stats, recent Mistakes and Play stats. It's a few kilobytes, far under Usion's 512 KB per-value limit. The shell keeps the last-used tab in a separate small key.
+- **Format:** one storage key holds the snapshot, as versioned JSON. It contains the version (1), settled Bankroll, last Bet, Hint setting, Streak, Best streak, per-cell stats, recent Mistakes, Play stats and the open (unanswered) Weighted-drill Situation. Saving that Situation means a reload can't skip it, just as a mode switch can't. It's a few kilobytes, far under Usion's 512 KB per-value limit. The shell keeps the last-used tab in a separate small key.
 - **Loading:** the shell loads the snapshot once, after `Usion.init` fires, and builds the Lab from it. `newLab` rejects a snapshot it can't validate (including cell ids that aren't on the chart and unknown Actions or sources) or whose version it doesn't know. A saved Bankroll below the table minimum is Refilled on load rather than rejected.
 - **Writes:** the shell saves after any step that changes persisted data (Settlement, a recorded Decision, Hint toggle, reset). Writes are coalesced: at most one is in flight, and the newest queued snapshot replaces older ones.
 - **Save failure:** the shell logs it with context and shows a non-blocking "progress not saved" notice, then retries on the next save.
@@ -278,7 +278,7 @@ Pairs:
 - **Launch:** always solo. The app never calls any multiplayer API, so Usion won't tag it as multiplayer (ADR 0001). It opens the last-used tab, or Play on first launch, with the Pending Bet pre-filled.
 - **Language and theme:** language `mn` means Mongolian, and anything else means English. The theme (light or dark) comes from init/`getTheme()` and drives CSS custom properties.
 - **Leaderboard:**
-  - On a "Streak ended" signal of length ≥ 1, logged-in users submit the length with `leaderboard.submit`. Usion keeps the best.
+  - On a "Streak ended" signal of length ≥ 1, logged-in users submit their Best streak with `leaderboard.submit`. Usion keeps the best, so re-sending it is harmless and repairs any earlier submit that failed. A board loaded before the submit landed is reloaded.
   - If the signal marks a new Best streak of 5 or more, the new-best card shows the rank from the submit result, `friends()` and `top({limit: 10})`.
   - The Improve tab shows friends/global boards and `me()`.
   - Guests (user id starting `guest_`) never submit, which avoids the host's mid-drill login prompt. They see a "Log in to rank" note instead.
@@ -391,4 +391,6 @@ Pairs:
   - Does the registry body accept the `leaderboard` config? Verify by reading the service back after registration.
   - The Vercel login and project creation need the human.
 - **Mongolian copy:** the Mongolian strings, especially the Rules of thumb, need review by a Mongolian speaker before publishing.
+- **Last writer wins:** each save replaces the whole snapshot, so a stale session left open on a second device can overwrite newer progress. Accepted for v1; merging per-field is the upgrade if it ever matters.
+- **Screen readers:** feedback, notices and Round results are announced through one live region that sits outside the re-rendered app. Dialogs take focus and make the page behind them inert.
 - **Service icon:** Usion's `image` field is a URL. An icon hosted with the Vercel deploy would do; the design is still to be decided.

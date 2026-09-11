@@ -5,8 +5,8 @@ const DECKS = 6
 const CUT_CARD = Math.floor(DECKS * 52 * 0.75) // reshuffle after the Round in which this many cards were dealt
 export const START_BANKROLL = 1000
 const MAX_HANDS = 4
-export const MIN_BET = 10
-export const MAX_BET = 500
+const MIN_BET = 10
+const MAX_BET = 500
 export const CHIPS = [10, 25, 100, 500]
 
 const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
@@ -86,7 +86,7 @@ function draw(s) {
 
 export function newLab(saved, { rng, cards = [] } = {}) {
   if (typeof rng !== 'function') throw new Error('newLab: rng function required')
-  const progress = saved == null ? freshProgress() : restore(saved)
+  const { openSituation, ...progress } = saved == null ? freshProgress() : restore(saved)
   // Same rule as Settlement: a Bankroll that can't cover the minimum is Refilled, never left stuck.
   if (progress.bankroll < MIN_BET) progress.bankroll = START_BANKROLL
   const s = {
@@ -95,7 +95,8 @@ export function newLab(saved, { rng, cards = [] } = {}) {
     shoe: newShoe(rng, cards),
     pendingBet: 0,
     round: null,
-    drill: null,
+    // An unanswered Weighted-drill Situation comes back after a reload, just as it does after a mode switch.
+    drill: openSituation ? { mode: 'weighted', slots: { weighted: { situation: openSituation, feedback: null } } } : null,
     coachFlag: null,
     refilled: false,
     streakEnded: null,
@@ -105,7 +106,15 @@ export function newLab(saved, { rng, cards = [] } = {}) {
 }
 
 function freshProgress() {
-  return { bankroll: START_BANKROLL, lastBet: MIN_BET, hint: false, streak: 0, bestStreak: 0, stats: emptyStats() }
+  return {
+    bankroll: START_BANKROLL,
+    lastBet: MIN_BET,
+    hint: false,
+    streak: 0,
+    bestStreak: 0,
+    stats: emptyStats(),
+    openSituation: null,
+  }
 }
 
 function emptyStats() {
@@ -144,6 +153,8 @@ function restore(saved) {
   }
   const play = stats.play
   if (!['hands', 'wins', 'losses', 'pushes'].every((k) => isCount(play?.[k])) || !Number.isFinite(play.net)) fail('stats.play')
+  const openSituation = saved.openSituation ?? null
+  if (openSituation !== null && !isRealSituation(openSituation)) fail(`open situation ${JSON.stringify(openSituation)}`)
   return {
     bankroll: saved.bankroll,
     lastBet: saved.lastBet,
@@ -151,7 +162,24 @@ function restore(saved) {
     streak: saved.streak,
     bestStreak: saved.bestStreak,
     stats: structuredClone(stats),
+    openSituation: structuredClone(openSituation),
   }
+}
+
+// Cards the drill could have dealt, and that land in the cell they claim.
+function isRealSituation(situation) {
+  const isCard = (card) => RANKS.includes(card?.rank) && SUITS.includes(card?.suit)
+  const { cards, upcard, allowed, cell } = situation
+  const wellFormed =
+    Array.isArray(cards) &&
+    cards.length >= 2 &&
+    cards.length <= 3 &&
+    cards.every(isCard) &&
+    isCard(upcard) &&
+    Array.isArray(allowed) &&
+    allowed.every((action) => ACTION_NAMES.includes(action)) &&
+    CELL_IDS.has(cell)
+  return wellFormed && bookAction(situation).cell === cell
 }
 
 export function step(state, event) {
@@ -178,7 +206,13 @@ export function snapshot(state) {
     streak: state.streak,
     bestStreak: state.bestStreak,
     stats: state.stats,
+    openSituation: openWeightedSituation(state),
   })
+}
+
+function openWeightedSituation(state) {
+  const slot = state.drill?.slots.weighted
+  return slot?.situation && !slot.feedback ? slot.situation : null
 }
 
 function invalid(reason) {
@@ -399,6 +433,7 @@ function settle(s) {
     else if (hand.result === 'push') stats.play.pushes++
     else stats.play.losses++
   }
+  round.bankrollBeforePayout = s.bankroll
   s.bankroll += returned
   s.lastBet = round.bet
   round.net = returned - staked

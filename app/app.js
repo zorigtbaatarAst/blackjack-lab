@@ -26,6 +26,7 @@ const NEW_BEST_CARD_MIN = 5
 const SUIT_GLYPH = { s: '♠', h: '♥', d: '♦', c: '♣' }
 
 const app = document.getElementById('app')
+const announcer = document.getElementById('announcer') // lives outside #app, so re-renders never recreate it
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
 
 let usion = null // window.Usion once init fired; null outside the host
@@ -88,7 +89,7 @@ async function boot() {
   } catch (err) {
     console.error('[lab] saved progress rejected; this session will not save', err, loaded.saved)
     persist = false
-    ui.notice = 'loadFailed'
+    setNotice('loadFailed')
     state = newLab(null, { rng: Math.random })
   }
   lastSavedJson = JSON.stringify(snapshot(state))
@@ -113,7 +114,7 @@ function initUsion() {
 
 async function loadProgress() {
   if (!usion) {
-    ui.notice = 'preview'
+    setNotice('preview')
     return { saved: null, tab: null }
   }
   try {
@@ -122,7 +123,7 @@ async function loadProgress() {
     return { saved, tab: uiSaved?.tab }
   } catch (err) {
     console.error('[lab] could not load progress; this session will not save', err)
-    ui.notice = 'loadFailed'
+    setNotice('loadFailed')
     return { saved: null, tab: null }
   }
 }
@@ -152,11 +153,16 @@ async function flushSaves() {
     } catch (err) {
       console.error('[lab] save failed; retrying on the next change', err)
       lastSavedJson = null
-      ui.notice = 'saveFailed'
+      setNotice('saveFailed')
       render()
     }
   }
   saving = false
+}
+
+function setNotice(key) {
+  if (ui.notice !== key) announce(t(key))
+  ui.notice = key
 }
 
 function rememberTab() {
@@ -187,10 +193,15 @@ function react(prev, event) {
   }
   const settledNow = state.round?.phase === 'settled' && (event.type === 'deal' || prev.round?.phase === 'player')
   if (settledNow) {
-    ui.bankrollShown = prev.bankroll
+    ui.bankrollShown = state.round.bankrollBeforePayout
     ui.refillPending = state.refilled
     startReveal()
   }
+  const flag = state.coachFlag
+  if (flag) announce(`${t('coachMistake', { action: actionName(flag.book) })}. ${t(`rule.${flag.rule}`)}`)
+  const feedback = event.type === 'answer' ? state.drill.feedback : null
+  if (feedback?.correct) announce(t('correct'))
+  else if (feedback) announce(`${t('coachMistake', { action: actionName(feedback.book) })}. ${t(`rule.${feedback.rule}`)}`)
   if (state.streakEnded) onStreakEnded(state.streakEnded)
   if (JSON.stringify(prev.drill?.situation) !== JSON.stringify(state.drill?.situation)) {
     ui.situationSerial++
@@ -220,6 +231,7 @@ function startReveal() {
 
 function finishReveal() {
   ui.bankrollShown = null
+  announce(t('roundNet', { n: signed(state.round.net) }))
   if (ui.refillPending) {
     ui.refillPending = false
     showToast(t('refilled', { n: fmt(START_BANKROLL) }))
@@ -234,7 +246,16 @@ function scheduleAdvance() {
   }, AUTO_ADVANCE_MS)
 }
 
+// Screen readers only reliably announce changes to a live region that already exists.
+function announce(text) {
+  announcer.textContent = ''
+  setTimeout(() => {
+    announcer.textContent = text
+  }, 50)
+}
+
 function showToast(text) {
+  announce(text)
   ui.toast = text
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
@@ -306,21 +327,30 @@ function fetchBoards() {
 
 async function onStreakEnded({ length, isNewBest }) {
   if (!canRank) return
-  ui.board = null // stale after a submit; Improve reloads it
+  // Submit the Best streak, not just this one: the board keeps each player's best, so re-sending it is
+  // harmless and repairs a submit that failed earlier.
+  const best = state.bestStreak
   let card = null
   if (isNewBest && length >= NEW_BEST_CARD_MIN) {
     card = { type: 'newBest', length, rank: null, status: 'loading', view: 'friends', friends: [], top: [] }
     ui.overlay = card
   }
   try {
-    const result = await usion.leaderboard.submit(length)
+    const result = await usion.leaderboard.submit(best)
+    refreshBoard()
     if (!card) return
     Object.assign(card, { rank: result?.rank ?? null, ...(await fetchBoards()), status: 'ready' })
   } catch (err) {
-    console.error('[lab] leaderboard submit failed', { length }, err)
+    console.error('[lab] leaderboard submit failed', { best }, err)
     if (card) card.status = 'error'
   }
   if (card && ui.overlay === card) render()
+}
+
+// A board loaded before the submit landed is stale: drop it, and reload it now if it's on screen.
+function refreshBoard() {
+  ui.board = null
+  if (ui.tab === 'improve') loadBoard()
 }
 
 async function loadBoard() {
@@ -371,14 +401,17 @@ function render() {
   const scroll = main?.dataset.tab === ui.tab ? main.scrollTop : 0
   const focused = document.activeElement?.dataset?.k
   const screen = { play: playScreen, train: trainScreen, improve: improveScreen }[ui.tab]
+  const inert = ui.overlay ? ' inert' : '' // a modal dialog keeps Tab and screen readers inside it
   app.innerHTML = `
     ${noticeHtml()}
-    <main class="screen screen-${ui.tab}" data-tab="${ui.tab}">${screen()}</main>
-    ${tabBarHtml()}
+    <main class="screen screen-${ui.tab}" data-tab="${ui.tab}"${inert}>${screen()}</main>
+    ${tabBarHtml(inert)}
     ${overlayHtml()}
-    ${ui.toast ? `<div class="toast" role="status">${esc(ui.toast)}</div>` : ''}`
+    ${ui.toast ? `<div class="toast">${esc(ui.toast)}</div>` : ''}`
   app.querySelector('main').scrollTop = scroll
   if (focused) app.querySelector(`[data-k="${focused}"]`)?.focus()
+  const modal = app.querySelector('.modal')
+  if (modal && !modal.contains(document.activeElement)) modal.querySelector('button')?.focus()
   syncBackButton()
 }
 
@@ -400,15 +433,15 @@ function syncBackButton() {
 }
 
 function noticeHtml() {
-  return ui.notice ? `<div class="notice" role="status">${t(ui.notice)}</div>` : ''
+  return ui.notice ? `<div class="notice">${t(ui.notice)}</div>` : ''
 }
 
-function tabBarHtml() {
+function tabBarHtml(inert) {
   const tabs = TABS.map(
     (tab) =>
       `<button data-do="tab" data-tab="${tab}" data-k="tab-${tab}" aria-current="${ui.tab === tab ? 'page' : 'false'}">${t(`tab.${tab}`)}</button>`,
   )
-  return `<nav class="tabs">${tabs.join('')}</nav>`
+  return `<nav class="tabs"${inert}>${tabs.join('')}</nav>`
 }
 
 function cardLabel(card) {
@@ -470,7 +503,7 @@ function playScreen() {
       ${dealerHtml(round)}
       <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ''}</div>
     </section>
-    <div class="coach" aria-live="polite">${coachHtml(revealing)}</div>
+    <div class="coach">${coachHtml(revealing)}</div>
     <footer class="controls">${controls}</footer>`
 }
 
@@ -565,7 +598,7 @@ function trainScreen() {
         <div class="meta">${t('yourHand')} · <strong>${totalLabel(situation.cards)}</strong></div>
       </div></div>
     </section>
-    <div class="coach" aria-live="polite">${result}</div>
+    <div class="coach">${result}</div>
     <footer class="controls">${controls}</footer>`
 }
 
@@ -701,7 +734,7 @@ function overlayHtml() {
   if (!overlay) return ''
   if (overlay.type === 'reset') {
     return modal(`
-      <p>${t('resetConfirm')}</p>
+      <p id="dialog-title">${t('resetConfirm')}</p>
       <div class="row">
         <button data-do="closeOverlay" data-k="cancel">${t('cancel')}</button>
         <button class="danger" data-do="resetYes" data-k="reset-yes">${t('reset')}</button>
@@ -713,7 +746,7 @@ function overlayHtml() {
     board = boardToggle('overlayView', overlay.view) + boardList(overlay.view === 'friends' ? overlay.friends : overlay.top)
   }
   return modal(`
-    <h2>${t('newBestTitle')}</h2>
+    <h2 id="dialog-title">${t('newBestTitle')}</h2>
     <p class="hero">${overlay.length}</p>
     <p>${t('newBestBody', { n: overlay.length })}${overlay.rank ? ` ${t('newBestRank', { rank: esc(overlay.rank) })}` : ''}</p>
     ${board}
@@ -721,5 +754,5 @@ function overlayHtml() {
 }
 
 function modal(content) {
-  return `<div class="scrim"><div class="modal" role="dialog" aria-modal="true">${content}</div></div>`
+  return `<div class="scrim"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title">${content}</div></div>`
 }

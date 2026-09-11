@@ -718,3 +718,34 @@ test('newLab needs an rng, and unknown drill modes throw', () => {
   assert.throws(() => newLab(null, {}), /rng/)
   assert.throws(() => step(lab(), startDrill('nope')), /drill/)
 })
+
+// ---------------------------------------------------------------- review round 2
+
+test('an open Weighted-drill Situation is saved, so a reload cannot skip it', () => {
+  const s = run(lab(), startDrill('weighted'))
+  const snap = snapshot(s)
+  assert.deepEqual(snap.openSituation, s.drill.situation)
+  const back = step(newLab(snap, { rng: seeded(9) }), startDrill('weighted'))
+  assert.deepEqual(back.drill.situation, s.drill.situation)
+})
+
+test('answered and Mistakes-drill Situations are not saved', () => {
+  const s = run(lab(), startDrill('weighted'))
+  assert.equal(snapshot(step(s, right(s))).openSituation, null)
+  const history = pendingHistory({ 'H16-10': { total: 1, correct: 0, pending: 2 } })
+  assert.equal(snapshot(run(lab([], history), startDrill('mistakes'))).openSituation, null)
+})
+
+test('a saved open Situation must really belong to its cell', () => {
+  const snap = snapshot(run(lab(), startDrill('weighted')))
+  const forged = { ...snap, openSituation: { ...snap.openSituation, cell: 'H8-2' } }
+  assert.throws(() => newLab(forged, { rng: seeded() }), /situation/)
+})
+
+test('Settlement records the Bankroll before payouts, so the reveal can show it', () => {
+  const doubled = run(lab(['6', '6', '5', '10', '9', '10']), deal, act('double'))
+  assert.equal(doubled.round.bankrollBeforePayout, 980)
+  assert.equal(doubled.bankroll, 1020)
+  const blackjack = run(lab(['A', '6', 'K', '5']), deal)
+  assert.equal(blackjack.round.bankrollBeforePayout, 990)
+})
