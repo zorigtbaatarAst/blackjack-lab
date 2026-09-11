@@ -185,6 +185,16 @@ The Book check that runs on every Decision in Play and flags Mistakes after the 
 **Hint**:
 The Coach showing the Book action before the player acts; hinted Decisions are not recorded.
 
+**Guide**:
+The in-app manual: how to play, this table's rules, basic strategy with the Strategy chart, card counting, and using the app.
+_Avoid_: Help page, docs
+
+**Tour**:
+The welcome slides a first-time player sees before choosing Starting chips.
+
+**Looked up**:
+A Hand whose player opened the Guide while a Decision was waiting. Its remaining Decisions are graded but, like hinted ones, not recorded and never change the Streak.
+
 **Improve**:
 Where the player sees their accuracy, Mistakes, Play results, and rank.
 
