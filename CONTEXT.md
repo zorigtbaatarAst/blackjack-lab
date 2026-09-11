@@ -124,14 +124,21 @@ Real Rounds for Chips against the dealer.
 Where the player practises Decisions without Chips; holds the Drills.
 
 **Drill**:
-A sequence of Situations presented one at a time for the player to decide.
+A sequence of Training hands, each played Decision by Decision until it's over.
 
 **Weighted drill**:
-The default Drill, biased toward Soft totals, Pairs, and close calls rather than dealt like a real Shoe.
+The default Drill: each Training hand starts from a Situation biased toward Soft totals, Pairs and Close calls.
 
 **Mistakes drill**:
-A Drill built only from Chart cells where the player has made Mistakes.
+A Drill whose Training hands start only from the player's Pending cells.
 _Avoid_: Review mode
+
+**Training hand**:
+A Round played in Train without Chips: a weighted start, every Decision graded, then the dealer plays out and the result shows.
+_Avoid_: Practice round, drill round
+
+**Training Shoe**:
+The six-deck Shoe a Drill deals from after a Training hand's start; separate from the Play Shoe.
 
 **Coach**:
 The Book check that runs on every Decision in Play and flags Mistakes after the Action is taken.
