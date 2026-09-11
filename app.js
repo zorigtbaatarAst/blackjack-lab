@@ -9,7 +9,7 @@ import {
   CHART_ROWS,
   CHIPS,
   DRILL_MODES,
-  START_BANKROLL,
+  STARTING_CHIPS,
   UPCARDS,
 } from './engine.js'
 import { STRINGS } from './strings.js'
@@ -21,6 +21,8 @@ const ACTIONS = ['hit', 'stand', 'double', 'split']
 const ACTION_KEYS = { hit: 'h', stand: 's', double: 'd', split: 'p' } // desktop shortcuts; Split is P, not S
 const INIT_TIMEOUT_MS = 8000 // the SDK's own recommendation; timing out inside Usion means an unsaved session
 const AUTO_ADVANCE_MS = 600
+const HAND_RESULT_MS = 1200 // a finished training hand stays on screen this long before the next deals
+const AUTO_DEAL_MS = 1500 // Auto bet: time to read the result before the next Round deals itself
 const REVEAL_MS = 450
 const TOAST_MS = 2600
 const NEW_BEST_CARD_MIN = 5
@@ -50,10 +52,13 @@ const ui = {
   roundSeen: new Set(), // card keys already on screen: only new cards animate in
   drillSeen: new Set(),
   situationSerial: 0,
+  advanceToken: 0, // invalidates a pending auto-advance when anything else happens first
+  autoBet: false, // re-deal the same Bet after every Round; session-only, never saved
 }
 let revealTimer = null
 let advanceTimer = null
 let toastTimer = null
+let autoDealTimer = null
 let backKey = null
 let lastSavedJson = null
 let saving = false
@@ -100,6 +105,7 @@ async function boot() {
   app.innerHTML = `${profileHtml()}<div id="view"></div>`
   app.addEventListener('click', onClick)
   document.addEventListener('keydown', onKey)
+  if (loaded.saved == null) ui.overlay = { type: 'bankroll', first: true, pick: null }
   switchTab(TABS.includes(loaded.tab) ? loaded.tab : 'play', { remember: false })
 }
 
@@ -225,9 +231,18 @@ function react(prev, event) {
   if (feedback?.correct) announce(t('correct'))
   else if (feedback) announce(`${t('coachMistake', { action: actionName(feedback.book) })}. ${t(`rule.${feedback.rule}`)}`)
   if (state.streakEnded) onStreakEnded(state.streakEnded)
-  if (JSON.stringify(prev.drill?.situation) !== JSON.stringify(state.drill?.situation)) {
+  // New cards animate in once per training hand (not on every Decision): a new serial means a new hand.
+  const prevRound = prev.drill?.round
+  const round = state.drill?.round
+  const newHand =
+    prev.drill?.mode !== state.drill?.mode ||
+    (round && (!prevRound || (prevRound.phase === 'settled' && round.phase === 'player')))
+  if (newHand) {
     ui.situationSerial++
     ui.drillSeen.clear()
+  }
+  if (event.type === 'answer' && round?.phase === 'settled') {
+    announce(round.hands.map((hand) => t(`result.${hand.result}`)).join(' · '))
   }
   // Also on startDrill: returning to a correctly answered Situation must still move on, or the drill is stuck.
   if ((event.type === 'answer' || event.type === 'startDrill') && state.drill?.feedback?.correct) scheduleAdvance()
@@ -256,16 +271,42 @@ function finishReveal() {
   announce(t('roundNet', { n: signed(state.round.net) }))
   if (ui.refillPending) {
     ui.refillPending = false
-    showToast(t('refilled', { n: fmt(START_BANKROLL) }))
+    showToast(t('refilled', { n: fmt(state.startingChips) }))
   }
+  if (!ui.autoBet) return
+  // The engine pre-fills the last Bet, or the table minimum when that's no longer affordable. Auto bet
+  // must never quietly keep playing a different Bet, so it stops instead.
+  if (state.pendingBet !== state.lastBet) {
+    ui.autoBet = false
+    showToast(t('autoStopped'))
+    return
+  }
+  scheduleAutoDeal()
+}
+
+function scheduleAutoDeal() {
+  clearTimeout(autoDealTimer)
+  autoDealTimer = setTimeout(() => {
+    const idle = !state.round || state.round.phase === 'settled'
+    if (!ui.autoBet || ui.tab !== 'play' || ui.overlay || !idle) return
+    if (!state.canDeal) {
+      ui.autoBet = false // never leave Auto on with nothing it can deal and the betting panel hidden
+      showToast(t('autoStopped'))
+      render()
+      return
+    }
+    dispatch({ type: 'deal' })
+  }, AUTO_DEAL_MS)
 }
 
 function scheduleAdvance() {
   clearTimeout(advanceTimer)
-  const serial = ui.situationSerial
+  const token = ++ui.advanceToken
+  // Mid-hand the next Decision comes quickly; once the hand is over, leave time to read the result.
+  const delay = state.drill.round?.phase === 'settled' ? HAND_RESULT_MS : AUTO_ADVANCE_MS
   advanceTimer = setTimeout(() => {
-    if (ui.situationSerial === serial && state.drill?.feedback?.correct) dispatch({ type: 'next' })
-  }, AUTO_ADVANCE_MS)
+    if (ui.advanceToken === token && state.drill?.feedback?.correct) dispatch({ type: 'next' })
+  }, delay)
 }
 
 // Screen readers only reliably announce changes to a live region that already exists.
@@ -296,6 +337,7 @@ function switchTab(tab, { remember = true } = {}) {
     return
   }
   if (tab === 'improve' && canRank && ui.board?.status !== 'ready' && ui.board?.status !== 'loading') loadBoard()
+  if (tab === 'play' && ui.autoBet) scheduleAutoDeal()
   render()
 }
 
@@ -307,6 +349,21 @@ const CLICKS = {
   deal: () => dispatch({ type: 'deal' }),
   act: ({ action }) => dispatch({ type: 'act', action }),
   hint: () => dispatch({ type: 'toggleHint' }),
+  autoBet: () => {
+    const idle = !state.round || state.round.phase === 'settled'
+    // The betting panel is hidden while Auto runs, so it must start from a Bet that can actually be dealt.
+    if (!ui.autoBet && idle && !state.canDeal) {
+      showToast(t('autoNeedsBet'))
+      render()
+      return
+    }
+    ui.autoBet = !ui.autoBet
+    clearTimeout(autoDealTimer)
+    const revealing = state.round?.phase === 'settled' && ui.dealerShown < state.round.dealer.length
+    // Turning it on at an idle table deals right away; mid-Round it takes over after this Round.
+    if (ui.autoBet && idle && !revealing && state.canDeal) dispatch({ type: 'deal' })
+    else render()
+  },
   drillMode: ({ mode }) => dispatch({ type: 'startDrill', mode }),
   answer: ({ action }) => dispatch({ type: 'answer', action }),
   next: () => {
@@ -321,6 +378,20 @@ const CLICKS = {
     ui.overlay.view = view
     render()
   },
+  bankrollAsk: () => {
+    ui.overlay = { type: 'bankroll', first: false, pick: null }
+    render()
+  },
+  pickBankroll: ({ chips }) => {
+    const card = ui.overlay
+    // First launch: nothing to lose, so one tap starts. Later it replaces real chips, so confirm first.
+    if (card.first) setBankroll(Number(chips))
+    else {
+      card.pick = Number(chips)
+      render()
+    }
+  },
+  bankrollYes: () => setBankroll(ui.overlay.pick),
   resetAsk: () => {
     ui.overlay = { type: 'reset' }
     render()
@@ -333,6 +404,12 @@ const CLICKS = {
     ui.overlay = null
     render()
   },
+}
+
+function setBankroll(chips) {
+  ui.overlay = null
+  dispatch({ type: 'newBankroll', chips })
+  announce(t('bankrollSet', { n: fmt(chips) }))
 }
 
 function onClick(e) {
@@ -425,6 +502,7 @@ function render() {
   const focused = document.activeElement?.dataset?.k
   const screen = { play: playScreen, train: trainScreen, improve: improveScreen }[ui.tab]
   const inert = ui.overlay ? ' inert' : '' // a modal dialog keeps Tab and screen readers inside it
+  view.classList.toggle('show-keys', state.hint) // key hints are help: only when the player asked for help
   view.innerHTML = `
     ${noticeHtml()}
     <main class="screen screen-${ui.tab}" data-tab="${ui.tab}"${inert}>${screen()}</main>
@@ -473,6 +551,7 @@ function keyTargets(key) {
   if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill']
   const chip = { 1: 10, 2: 25, 3: 100, 4: 500 }[key]
   if (chip) return [`chip-${chip}`]
+  if (key === 'a') return ['auto']
   if (key === 'c') return ['clear']
   if (key === 'r') return ['rebet']
   return []
@@ -560,36 +639,59 @@ function actionButtons(doName, allowed, locked = false) {
   return `<div class="actions">${buttons.join('')}</div>`
 }
 
-const FLAG_ICON = { good: '✓', bad: '✗', hint: '💡' }
-
-function flagHtml(kind, title, rule) {
-  const icon = FLAG_ICON[kind]
-  return `<div class="flag ${kind}"><strong>${icon} ${title}</strong>${rule ? `<small>${t(`rule.${rule}`)}</small>` : ''}</div>`
-}
-
 // ------------------------------------------------------------------ Play
 
+// The layout never changes between turns (that made the screen jump): the bet line and chips always
+// stay, only the bottom row swaps between Clear/Rebet/Deal and the Actions, and both are the same height.
+// The betting panel and the action panel are stacked in one grid cell and only one is visible, so the
+// area keeps the taller one's height: no chips during a Round, and still nothing moves between turns.
 function playScreen() {
   const { round } = state
   const revealing = round?.phase === 'settled' && ui.dealerShown < round.dealer.length
-  let controls = bettingHtml()
-  if (round?.phase === 'player') controls = actionButtons('act', round.allowed)
-  else if (revealing) controls = ''
+  // With Auto on the table never drops back to betting between Rounds: the greyed Action row stays.
+  const acting = round?.phase === 'player' || revealing || ui.autoBet
   return `
     <header class="bar">
-      <div class="stat muted">${t('cardsLeft', { n: state.cardsLeft })}</div>
-      <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
+      <div class="shoe"><i aria-hidden="true"></i>${t('cardsLeft', { n: state.cardsLeft })}</div>
+      <div class="bar-actions">
+        <button class="toggle" data-do="autoBet" data-k="auto" aria-pressed="${ui.autoBet}">${t('autoBet')}<kbd>A</kbd></button>
+        <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
+      </div>
     </header>
     <section class="table">
       ${dealerHtml(round)}
-      <div class="hands${round?.hands.length > 2 ? ' many' : ''}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ''}</div>
+      ${playMessage(revealing)}
+      <div class="hands${handsClass(round)}">${round ? round.hands.map((hand, i) => handHtml(hand, i, revealing)).join('') : ghostHand()}</div>
     </section>
-    <div class="coach">${coachHtml(revealing)}</div>
-    <footer class="controls">${controls}</footer>`
+    <footer class="controls">
+      <div class="panel${acting ? ' off' : ''}">
+        <div class="bet-line"><span class="label">${t('bet')}</span>${chipStack(state.pendingBet)}<strong>${fmt(state.pendingBet)}</strong></div>
+        ${chipTray(!acting)}
+        ${bettingRow()}
+        <p class="keys muted small">${t('keysBet')}</p>
+      </div>
+      <div class="panel acting${acting ? '' : ' off'}">
+        ${actionButtons('act', round?.phase === 'player' ? round.allowed : [])}
+        <p class="keys muted small">${t('keysAct')}</p>
+      </div>
+    </footer>`
+}
+
+// One fixed-height slot on the felt: a mistake, the Hint, or the Round's result; otherwise the print.
+function playMessage(revealing) {
+  const { coachFlag: flag, hintAction: hint, round } = state
+  const net = round?.phase === 'settled' && !revealing ? t('roundNet', { n: signed(round.net) }) : null
+  if (flag) {
+    const title = `✗ ${t('coachMistake', { action: actionName(flag.book) })}${net ? ` · ${net}` : ''}`
+    return feltMessage('bad', title, t(`rule.${flag.rule}`))
+  }
+  if (hint) return feltMessage('hint', `💡 ${t('hintSays', { action: actionName(hint.action) })}`, t(`rule.${hint.rule}`))
+  if (net) return feltMessage('net', net, t('feltPays'))
+  return feltMessage('', t('feltPays'), t('feltRule'))
 }
 
 function dealerHtml(round) {
-  if (!round) return `<div class="dealer"><div class="label">${t('dealer')}</div><div class="cards empty-row"></div></div>`
+  if (!round) return `<div class="dealer"><div class="label">${t('dealer')}</div>${ghostCards()}</div>`
   const shown = round.phase === 'player' ? 1 : ui.dealerShown
   const cards = round.dealer.map((card, i) => {
     if (i < shown) return cardFace(card, `d${i}`, ui.roundSeen, i === 1 ? 'flip' : 'enter') // the hole card turns over
@@ -600,6 +702,41 @@ function dealerHtml(round) {
     <div class="label">${t('dealer')}${complete ? ` · <strong>${totalLabel(round.dealer)}</strong>` : ''}</div>
     <div class="cards">${cards.join('')}</div>
   </div>`
+}
+
+// Smaller cards once a Split puts several Hands side by side, so they never wrap into a second row.
+function handsClass(round) {
+  const count = round?.hands.length ?? 1
+  if (count > 2) return ' many'
+  return count === 2 ? ' split' : ''
+}
+
+// Outlines where the cards will land, so an empty table still reads as a table.
+function ghostCards() {
+  return '<div class="cards" aria-hidden="true"><div class="card ghost"></div><div class="card ghost"></div></div>'
+}
+
+// The player's spot before the first Round: same box as a real Hand (cards + info line), so dealing doesn't jump.
+function ghostHand() {
+  return `<div class="hand">${ghostCards()}<div class="meta"></div></div>`
+}
+
+// Screen readers get these messages from the announcer, so the felt copy is hidden from them.
+function feltMessage(kind, title, subtitle) {
+  return `<div class="felt-print${kind ? ` ${kind}` : ''}" aria-hidden="true"><strong>${title}</strong><span>${subtitle}</span></div>`
+}
+
+// The Bet as real chips: greedy from the biggest denomination, capped so a big Bet stays a neat stack.
+function chipStack(amount) {
+  const discs = []
+  let left = amount
+  for (const chip of [...CHIPS].reverse()) {
+    while (left >= chip && discs.length < 8) {
+      discs.push(chip)
+      left -= chip
+    }
+  }
+  return `<span class="stack" aria-hidden="true">${discs.map((chip) => `<span class="disc chip-${chip}"></span>`).join('')}</span>`
 }
 
 function handHtml(hand, i, revealing) {
@@ -613,33 +750,21 @@ function handHtml(hand, i, revealing) {
   </div>`
 }
 
-function coachHtml(revealing) {
-  const parts = []
-  const flag = state.coachFlag
-  if (flag) parts.push(flagHtml('bad', t('coachMistake', { action: actionName(flag.book) }), flag.rule))
-  const hint = state.hintAction
-  if (hint) parts.push(flagHtml('hint', t('hintSays', { action: actionName(hint.action) }), hint.rule))
-  if (state.round?.phase === 'settled' && !revealing) {
-    parts.push(`<div class="round-net">${t('roundNet', { n: signed(state.round.net) })}</div>`)
-  }
-  return parts.join('')
+function chipTray(canBet) {
+  const chips = CHIPS.map((chip) => {
+    const enabled = canBet && state.chipsEnabled.includes(chip)
+    return `<button class="chip chip-${chip}" data-do="bet" data-chip="${chip}" data-k="chip-${chip}" ${enabled ? '' : 'disabled'}>${chip}</button>`
+  })
+  return `<div class="chips">${chips.join('')}</div>`
 }
 
-function bettingHtml() {
-  const chips = CHIPS.map(
-    (chip) =>
-      `<button class="chip chip-${chip}" data-do="bet" data-chip="${chip}" data-k="chip-${chip}" ${state.chipsEnabled.includes(chip) ? '' : 'disabled'}>${chip}</button>`,
-  )
+function bettingRow() {
   const canRebet = state.canRebet && state.pendingBet !== state.lastBet
-  return `
-    <div class="bet-line"><span class="label">${t('bet')}</span><strong>${fmt(state.pendingBet)}</strong></div>
-    <div class="chips">${chips.join('')}</div>
-    <div class="row">
+  return `<div class="row">
       <button data-do="clearBet" data-k="clear" ${state.pendingBet > 0 ? '' : 'disabled'}>${t('clear')}</button>
       <button data-do="rebet" data-k="rebet" ${canRebet ? '' : 'disabled'}>${t('rebet')}</button>
       <button class="primary" data-do="deal" data-k="deal" ${state.canDeal ? '' : 'disabled'}>${t('deal')}<kbd>↵</kbd></button>
-    </div>
-    <p class="keys muted small">${t('keysPlay')}</p>`
+    </div>`
 }
 
 // ------------------------------------------------------------------ Train
@@ -662,26 +787,50 @@ function trainScreen() {
         <button data-do="drillMode" data-mode="weighted" data-k="back-to-drill">${t('backToDrill')}</button>
       </section>`
   }
-  const { situation, feedback } = drill
-  const up = cardFace(situation.upcard, `up-${ui.situationSerial}`, ui.drillSeen)
-  const cards = situation.cards.map((card, i) => cardFace(card, `p${i}-${ui.situationSerial}`, ui.drillSeen))
-  let result = ''
-  if (feedback?.correct) result = flagHtml('good', t('correct'))
-  else if (feedback) result = flagHtml('bad', t('coachMistake', { action: actionName(feedback.book) }), feedback.rule)
-  const controls =
-    feedback && !feedback.correct
-      ? `<button class="primary wide" data-do="next" data-k="next">${t('next')}<kbd>↵</kbd></button>`
-      : actionButtons('answer', situation.allowed, Boolean(feedback))
+  const { round, feedback } = drill
+  const locked = Boolean(feedback) || round.phase === 'settled'
+  const needsNext = Boolean(feedback && !feedback.correct)
+  const controls = `
+    <div class="panel acting${needsNext ? ' off' : ''}">${actionButtons('answer', locked ? [] : round.allowed)}</div>
+    <div class="panel next${needsNext ? '' : ' off'}">
+      <button class="primary wide" data-do="next" data-k="next" ${needsNext ? '' : 'disabled'}>${t('next')}<kbd>↵</kbd></button>
+    </div>`
   return `${header}
     <section class="table">
-      <div class="dealer"><div class="label">${t('dealer')}</div><div class="cards">${up}</div></div>
-      <div class="hands"><div class="hand">
-        <div class="cards">${cards.join('')}</div>
-        <div class="meta">${t('yourHand')} · <strong>${totalLabel(situation.cards)}</strong></div>
-      </div></div>
+      ${trainDealerHtml(round)}
+      ${trainMessage(round, feedback)}
+      <div class="hands${handsClass(round)}">${round.hands.map((hand, i) => trainHandHtml(round, hand, i)).join('')}</div>
     </section>
-    <div class="coach">${result}</div>
-    <footer class="controls">${controls}</footer>`
+    <footer class="controls">${controls}<p class="keys muted small">${t('keysTrain')}</p></footer>`
+}
+
+// The training table: the hole card stays face down while you decide and turns over when your hand is done.
+function trainDealerHtml(round) {
+  const key = (i) => `t${ui.situationSerial}-d${i}`
+  const cards =
+    round.phase === 'player'
+      ? [cardFace(round.dealer[0], key(0), ui.drillSeen), cardBack(key('back'), ui.drillSeen)]
+      : round.dealer.map((card, i) => cardFace(card, key(i), ui.drillSeen, i === 1 ? 'flip' : 'enter'))
+  const total = round.phase === 'settled' ? ` · <strong>${totalLabel(round.dealer)}</strong>` : ''
+  return `<div class="dealer"><div class="label">${t('dealer')}${total}</div><div class="cards">${cards.join('')}</div></div>`
+}
+
+function trainHandHtml(round, hand, i) {
+  const active = round.phase === 'player' && i === round.active
+  const cards = hand.cards.map((card, j) => cardFace(card, `t${ui.situationSerial}-h${i}-${j}`, ui.drillSeen))
+  const result = round.phase === 'settled' ? ` <span class="badge ${hand.result}">${t(`result.${hand.result}`)}</span>` : ''
+  return `<div class="hand${active ? ' active' : ''}">
+    <div class="cards">${cards.join('')}</div>
+    <div class="meta"><strong>${totalLabel(hand.cards)}</strong>${result}</div>
+  </div>`
+}
+
+// The fixed felt slot: the last Decision's feedback (plus the result once the hand is over), else the prompt.
+function trainMessage(round, feedback) {
+  const result = round.phase === 'settled' ? ` · ${round.hands.map((hand) => t(`result.${hand.result}`)).join(' · ')}` : ''
+  if (feedback?.correct) return feltMessage('good', `✓ ${t('correct')}${result}`, t(`rule.${feedback.rule}`))
+  if (feedback) return feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}${result}`, t(`rule.${feedback.rule}`))
+  return feltMessage('', t('feltTrain'), t('feltTrainSub'))
 }
 
 // ------------------------------------------------------------------ Improve
@@ -697,7 +846,10 @@ function improveScreen() {
     <section class="block">${chartHtml(stats.cells)}</section>
     <section class="block">${mistakesHtml(stats.mistakes)}</section>
     <section class="block">${playStatsHtml(stats.play)}</section>
-    <div class="reset-row"><button class="danger" data-do="resetAsk" data-k="reset">${t('resetStats')}</button></div>`
+    <div class="reset-row">
+      <button data-do="bankrollAsk" data-k="new-bankroll" ${state.round?.phase === 'player' ? `disabled title="${t('finishRoundFirst')}"` : ''}>${t('newBankroll')}</button>
+      <button class="danger" data-do="resetAsk" data-k="reset">${t('resetStats')}</button>
+    </div>`
 }
 
 function accuracyHtml(accuracy) {
@@ -755,6 +907,10 @@ function heatLevel(mistakeRate) {
   return 4
 }
 
+// Each cell wears its Book action's colour (the same as the buttons), so the chart reads as a real
+// strategy chart from the first launch. Unplayed cells are faded; a white ring marks Mistakes, thicker = more often.
+const CODE_CLASS = { H: 'hit', S: 'stand', D: 'double', Ds: 'double-stand', P: 'split' }
+
 function chartHtml(cells) {
   const head = `<div class="hm-row hm-head"><span></span>${UPCARDS.map((up) => `<span>${up}</span>`).join('')}</div>`
   let group = null
@@ -765,22 +921,28 @@ function chartHtml(cells) {
       const up = UPCARDS[col]
       const cell = cells[row.cells[col]]
       const vars = { row: rowTitle(row), up, action: actionName(ACTION_OF_CODE[code]) }
-      const level = cell ? heatLevel(1 - cell.correct / cell.total) : 'none'
+      const state = cell ? `miss-${heatLevel(1 - cell.correct / cell.total)}` : 'unplayed'
       const label = cell ? t('chartCell', { ...vars, correct: cell.correct, total: cell.total }) : t('chartCellEmpty', vars)
-      return `<span class="hm-cell hm-${level}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
+      return `<span class="hm-cell act-${CODE_CLASS[code]} ${state}" title="${esc(label)}" aria-label="${esc(label)}">${code}</span>`
     })
     return `${heading}<div class="hm-row"><span class="hm-label">${rowLabel(row.id)}</span>${cellsHtml.join('')}</div>`
   })
-  const legendSteps = [0, 1, 2, 3, 4].map((level) => `<span class="hm-cell hm-${level}"></span>`).join('')
-  const codes = ['H', 'S', 'D', 'P'].map((code) => `<b>${code}</b> ${actionName(ACTION_OF_CODE[code])}`).join(' · ')
+  const swatch = (code, name) => `<span class="legend-item"><span class="hm-cell act-${CODE_CLASS[code]}">${code}</span> ${name}</span>`
+  const actions = [
+    swatch('H', actionName('hit')),
+    swatch('S', actionName('stand')),
+    swatch('D', actionName('double')),
+    swatch('Ds', `${actionName('double')} / ${actionName('stand')}`),
+    swatch('P', actionName('split')),
+  ]
   return `<h2>${t('chartTitle')}</h2>
     <p class="muted small">${t('chartNote')}</p>
     <div class="heatmap">${head}${rows.join('')}</div>
+    <div class="legend small">${actions.join('')}</div>
     <div class="legend small">
-      <span class="legend-item"><span class="hm-cell hm-none"></span> ${t('chartNoData')}</span>
-      <span class="legend-item">${t('chartScale')} 0% ${legendSteps} 100%</span>
-    </div>
-    <p class="muted small">${codes} · <b>Ds</b> ${actionName('double')} / ${actionName('stand')}</p>`
+      <span class="legend-item"><span class="hm-cell act-hit unplayed"></span> ${t('chartNew')}</span>
+      <span class="legend-item"><span class="hm-cell act-hit miss-1"></span><span class="hm-cell act-hit miss-4"></span> ${t('chartRing')}</span>
+    </div>`
 }
 
 function miniCard(rank) {
@@ -814,6 +976,7 @@ function playStatsHtml(play) {
 function overlayHtml() {
   const overlay = ui.overlay
   if (!overlay) return ''
+  if (overlay.type === 'bankroll') return bankrollHtml(overlay)
   if (overlay.type === 'reset') {
     return modal(`
       <p id="dialog-title">${t('resetConfirm')}</p>
@@ -833,6 +996,26 @@ function overlayHtml() {
     <p>${t('newBestBody', { n: overlay.length })}${overlay.rank ? ` ${t('newBestRank', { rank: esc(overlay.rank) })}` : ''}</p>
     ${board}
     <button class="primary wide" data-do="closeOverlay" data-k="close">${t('close')}</button>`)
+}
+
+function bankrollHtml({ first, pick }) {
+  if (pick) {
+    return modal(`
+      <p id="dialog-title">${t('bankrollConfirm', { current: fmt(state.bankroll), n: fmt(pick) })}</p>
+      <div class="row">
+        <button data-do="closeOverlay" data-k="cancel">${t('cancel')}</button>
+        <button class="primary" data-do="bankrollYes" data-k="bankroll-yes">${t('bankrollStart', { n: fmt(pick) })}</button>
+      </div>`)
+  }
+  const options = STARTING_CHIPS.map((chips) => {
+    const current = chips === state.startingChips
+    return `<button class="bankroll-option${current ? ' current' : ''}" data-do="pickBankroll" data-chips="${chips}" data-k="bankroll-${chips}">${fmt(chips)}</button>`
+  })
+  return modal(`
+    <h2 id="dialog-title">${t(first ? 'bankrollTitleFirst' : 'newBankroll')}</h2>
+    <p class="muted">${t('bankrollBody')}</p>
+    <div class="bankroll-options">${options.join('')}</div>
+    ${first ? '' : `<button data-do="closeOverlay" data-k="cancel">${t('cancel')}</button>`}`)
 }
 
 function modal(content) {
