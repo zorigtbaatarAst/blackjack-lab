@@ -16,7 +16,10 @@ const PAYOUT = { blackjack: 2.5, win: 2, push: 1, lose: 0, bust: 0 } // returned
 const SNAPSHOT_VERSION = 1
 const FIXES_TO_CLEAR = 2 // consecutive Book-matching Decisions that clear a Pending cell
 const MISTAKES_KEPT = 50
-export const DRILL_MODES = ['weighted', 'mistakes']
+export const DRILL_MODES = ['weighted', 'mistakes'] // the Drills that play Training hands
+export const TRAIN_MODES = [...DRILL_MODES, 'values']
+export const COUNT_SPEEDS = ['slow', 'normal', 'fast']
+const COUNTING_TALLIES = ['values', 'runningCount', 'trueCount', 'bet']
 const ACTION_NAMES = ['hit', 'stand', 'double', 'split']
 const SOURCES = ['play', ...DRILL_MODES]
 const DRILL_EXCLUDED_ROWS = new Set(['H8', 'H17', 'S19', 'S20']) // trivial: never dealt by the Weighted drill
@@ -52,6 +55,14 @@ function isPair(cards) {
 
 function isBlackjack(hand) {
   return !hand.fromSplit && hand.cards.length === 2 && handTotal(hand.cards).total === 21
+}
+
+// Hi-Lo: a low card leaving the Shoe helps the player (+1), a ten or an ace leaving it hurts (−1).
+function countValue(rank) {
+  const points = value(rank)
+  if (points <= 6) return 1
+  if (points <= 9) return 0
+  return -1
 }
 
 // ------------------------------------------------------------------ shoe
@@ -97,7 +108,7 @@ export function newLab(saved, { rng, cards = [], trainingCards = [] } = {}) {
     pendingBet: 0,
     round: null,
     drill: null,
-    trainingCards, // stacks the first Training Shoe (tests); consumed by newTrainingSlot
+    trainingCards, // stacks the first Shoe created in Train (tests); consumed by trainingShoe
     coachFlag: null,
     refilled: false,
     streakEnded: null,
@@ -120,6 +131,8 @@ function freshProgress() {
     hint: false,
     streak: 0,
     bestStreak: 0,
+    sprintBest: 0,
+    countSpeed: 'normal',
     stats: emptyStats(),
     openHand: null,
     openStart: null,
@@ -127,7 +140,11 @@ function freshProgress() {
 }
 
 function emptyStats() {
-  return { cells: {}, mistakes: [], play: { hands: 0, wins: 0, losses: 0, pushes: 0, net: 0 } }
+  return { cells: {}, mistakes: [], play: { hands: 0, wins: 0, losses: 0, pushes: 0, net: 0 }, counting: emptyCounting() }
+}
+
+function emptyCounting() {
+  return Object.fromEntries(COUNTING_TALLIES.map((key) => [key, { correct: 0, total: 0 }]))
 }
 
 // Rejects anything it can't trust: the shell must never build on (and then overwrite) bad progress.
@@ -164,6 +181,16 @@ function restore(saved) {
   }
   const play = stats.play
   if (!['hands', 'wins', 'losses', 'pushes'].every((k) => isCount(play?.[k])) || !Number.isFinite(play.net)) fail('stats.play')
+  // Saves from before counting existed have none of these: counting starts at zero.
+  const sprintBest = saved.sprintBest ?? 0
+  if (!isCount(sprintBest)) fail(`sprintBest ${saved.sprintBest}`)
+  const countSpeed = saved.countSpeed ?? 'normal'
+  if (!COUNT_SPEEDS.includes(countSpeed)) fail(`countSpeed ${saved.countSpeed}`)
+  const counting = stats.counting ?? emptyCounting()
+  for (const key of COUNTING_TALLIES) {
+    const tally = counting[key]
+    if (!isCount(tally?.total) || !isCount(tally.correct) || tally.correct > tally.total) fail(`stats.counting.${key}`)
+  }
   const openHand = saved.openHand ?? null
   if (openHand !== null && !isResumableHand(openHand)) fail(`open hand ${JSON.stringify(openHand)}`)
   // The first deployed build saved an open Situation instead; it restarts as a hand from that Situation.
@@ -176,7 +203,9 @@ function restore(saved) {
     hint: saved.hint,
     streak: saved.streak,
     bestStreak: saved.bestStreak,
-    stats: structuredClone(stats),
+    sprintBest,
+    countSpeed,
+    stats: { ...structuredClone(stats), counting: structuredClone(counting) },
     openHand: structuredClone(openHand),
     openStart: legacy && { cards: structuredClone(legacy.cards), upcard: structuredClone(legacy.upcard) },
   }
@@ -262,6 +291,8 @@ export function snapshot(state) {
     hint: state.hint,
     streak: state.streak,
     bestStreak: state.bestStreak,
+    sprintBest: state.sprintBest,
+    countSpeed: state.countSpeed,
     stats: state.stats,
     openHand: openWeightedHand(state),
   })
@@ -355,9 +386,13 @@ const HANDLERS = {
   },
 
   startDrill(s, { mode }) {
-    if (!DRILL_MODES.includes(mode)) invalid(`no ${mode} drill`)
+    if (!TRAIN_MODES.includes(mode)) invalid(`no ${mode} drill`)
     s.drill ??= { mode, slots: {} }
     s.drill.mode = mode
+    if (mode === 'values') {
+      s.drill.values ??= newValuesDrill(s)
+      return
+    }
     const slot = (s.drill.slots[mode] ??= newTrainingSlot(s))
     // An unfinished hand is kept, so switching modes can't skip a Decision; an empty slot deals.
     if (!slot.round) dealTrainingHand(s, slot, mode)
@@ -386,6 +421,38 @@ const HANDLERS = {
     }
     if (!slot?.feedback) invalid('answer the Decision before next')
     slot.feedback = null
+  },
+
+  sprintStart(s) {
+    const values = s.drill?.mode === 'values' ? s.drill.values : null
+    if (!values) invalid('sprintStart outside the Values drill')
+    if (values.phase === 'running') invalid('the sprint is already running')
+    Object.assign(values, { phase: 'running', score: 0, misses: 0, miss: null, result: null })
+    values.card = drawSprintCard(s, values)
+  },
+
+  sprintAnswer(s, { countValue: answer }) {
+    const values = s.drill?.values
+    if (values?.phase !== 'running') invalid('no sprint running')
+    if (![1, 0, -1].includes(answer)) invalid(`${answer} is not a Count value`)
+    const expected = countValue(values.card.rank)
+    const correct = answer === expected
+    tally(s.stats.counting.values, correct)
+    if (correct) values.score++
+    else values.misses++
+    values.miss = correct ? null : { card: values.card, value: expected }
+    values.card = drawSprintCard(s, values)
+  },
+
+  // The clock is the shell's: it ends the sprint at 0 s, or when the player leaves the drill.
+  sprintEnd(s) {
+    const values = s.drill?.values
+    if (values?.phase !== 'running') invalid('no sprint running')
+    values.phase = 'over'
+    values.result = { score: values.score, misses: values.misses, isNewBest: values.score > s.sprintBest }
+    s.sprintBest = Math.max(s.sprintBest, values.score)
+    values.card = null
+    values.miss = null
   },
 }
 
@@ -710,11 +777,16 @@ const WEIGHTED_CELLS = CHART_ROWS.flatMap((row, r) =>
 )
 const WEIGHT_TOTAL = WEIGHTED_CELLS.reduce((sum, { weight }) => sum + weight, 0)
 
-// Each drill mode has its own training table. Tests stack the first Training Shoe; later ones are plain shuffles.
-function newTrainingSlot(s) {
-  const slot = { round: null, shoe: newShoe(s.rng, s.trainingCards), feedback: null }
+// Tests stack the first Shoe created in Train, whichever drill creates it; later ones are plain shuffles.
+function trainingShoe(s) {
+  const shoe = newShoe(s.rng, s.trainingCards)
   s.trainingCards = []
-  return slot
+  return shoe
+}
+
+// Each drill mode has its own training table.
+function newTrainingSlot(s) {
+  return { round: null, shoe: trainingShoe(s), feedback: null }
 }
 
 // A new Training hand in the slot: the Weighted pick (or a Pending cell) gives the start, the Training Shoe the rest.
@@ -826,4 +898,21 @@ function shuffled(list, rng) {
   const copy = [...list]
   shuffle(copy, rng)
   return copy
+}
+
+// ------------------------------------------------------------------ Counting (Hi-Lo)
+
+// The Values drill: a sprint through its own Shoe. The engine grades; the 30-second clock is the shell's.
+function newValuesDrill(s) {
+  return { phase: 'ready', shoe: trainingShoe(s), card: null, score: 0, misses: 0, miss: null, result: null }
+}
+
+function drawSprintCard(s, values) {
+  if (values.shoe.next >= values.shoe.cards.length) values.shoe = newShoe(s.rng)
+  return draw(values)
+}
+
+function tally(counter, correct) {
+  counter.total++
+  if (correct) counter.correct++
 }

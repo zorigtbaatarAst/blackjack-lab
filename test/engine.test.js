@@ -529,7 +529,13 @@ test('Reset stats clears cells, Mistakes and Play stats, and keeps Chips, Hint a
     },
   })
   const s = step(lab([], history), resetStats)
-  assert.deepEqual(s.stats, { cells: {}, mistakes: [], play: { hands: 0, wins: 0, losses: 0, pushes: 0, net: 0 } })
+  const zero = { correct: 0, total: 0 }
+  assert.deepEqual(s.stats, {
+    cells: {},
+    mistakes: [],
+    play: { hands: 0, wins: 0, losses: 0, pushes: 0, net: 0 },
+    counting: { values: zero, runningCount: zero, trueCount: zero, bet: zero },
+  })
   assert.deepEqual(
     [s.bankroll, s.lastBet, s.hint, s.streak, s.bestStreak],
     [1234, 25, true, 3, 7],
