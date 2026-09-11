@@ -100,6 +100,11 @@ export const STRINGS = {
     answerOk: 'OK',
     trayLabel: 'Discard tray: {n} decks dealt',
     keysCount: 'Keys: 1 2 3 speed · ← → adjust · digits and − type · Enter answer · 1–8 Bet',
+    rulesButton: 'Rules',
+    chartButton: 'Chart',
+    whyHow: 'Why & how',
+    lookedUp: "Looked up: this hand isn't counted",
+    notCounted: 'not counted',
 
     accuracy: 'Accuracy',
     'group.hard': 'Hard',
@@ -299,6 +304,11 @@ export const STRINGS = {
     answerOk: 'OK',
     trayLabel: 'Хаягдлын тавиур: {n} багц тараагдсан',
     keysCount: 'Товч: 1 2 3 хурд · ← → өөрчлөх · тоо ба − бичих · Enter хариулах · 1–8 бооцоо',
+    rulesButton: 'Дүрэм',
+    chartButton: 'Хүснэгт',
+    whyHow: 'Яагаад, яаж',
+    lookedUp: 'Хүснэгт харсан: энэ гар тоологдохгүй',
+    notCounted: 'тоологдохгүй',
 
     accuracy: 'Нарийвчлал',
     'group.hard': 'Хатуу',

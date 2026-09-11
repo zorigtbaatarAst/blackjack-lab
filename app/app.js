@@ -77,6 +77,7 @@ const ui = {
   stepper: '0', // the Count-check answer as typed
   stepperTyped: false, // typing replaces the pre-filled value; after that it edits it
   lastRunningCount: 0, // the last Running count revealed: where the stepper starts
+  countingIntro: false, // the counting chapter has opened by itself once; kept in the UI store
 }
 let revealTimer = null
 let advanceTimer = null
@@ -118,6 +119,7 @@ async function boot() {
   if (canRank) profile = await loadProfile(config)
 
   const loaded = await loadProgress()
+  ui.countingIntro = loaded.countingIntro
   try {
     state = newLab(loaded.saved, { rng: Math.random })
   } catch (err) {
@@ -170,16 +172,16 @@ function initUsion() {
 async function loadProgress() {
   if (!usion) {
     setNotice('preview')
-    return { saved: null, tab: null }
+    return { saved: null, tab: null, countingIntro: false }
   }
   try {
     const [saved, uiSaved] = await Promise.all([usion.storage.get(STORAGE_KEY), usion.storage.get(UI_KEY)])
     persist = true
-    return { saved, tab: uiSaved?.tab }
+    return { saved, tab: uiSaved?.tab, countingIntro: uiSaved?.countingIntro === true }
   } catch (err) {
     console.error('[lab] could not load progress; this session will not save', err)
     setNotice('loadFailed')
-    return { saved: null, tab: null }
+    return { saved: null, tab: null, countingIntro: false }
   }
 }
 
@@ -220,9 +222,9 @@ function setNotice(key) {
   ui.notice = key
 }
 
-function rememberTab() {
+function rememberUi() {
   if (!persist) return
-  usion.storage.set(UI_KEY, { tab: ui.tab }).catch((err) => console.error('[lab] could not remember the tab', err))
+  usion.storage.set(UI_KEY, { tab: ui.tab, countingIntro: ui.countingIntro }).catch((err) => console.error('[lab] could not remember the UI', err))
 }
 
 // ------------------------------------------------------------------ events
@@ -275,6 +277,8 @@ function react(prev, event) {
   if ((event.type === 'answer' || event.type === 'startDrill') && state.drill?.feedback?.correct) scheduleAdvance()
   reactValues(event)
   reactCount(prev, event)
+  const counting = event.type === 'startDrill' && (event.mode === 'values' || event.mode === 'count')
+  if (counting && !ui.countingIntro) showCountingIntro()
 }
 
 function startReveal() {
@@ -552,7 +556,7 @@ function switchTab(tab, { remember = true } = {}) {
     clearCountTimer() // leaving pauses the Count drill; coming back resumes it
   }
   ui.tab = tab
-  if (remember) rememberTab()
+  if (remember) rememberUi()
   if (tab === 'train') {
     // Always re-enter the current drill: an empty Mistakes drill picks up cells missed in Play meanwhile,
     // while an unanswered Situation is kept (the engine never redeals one).
@@ -692,6 +696,14 @@ function afterGuide(sawChart) {
   if (sawChart) dispatch({ type: 'lookUp' })
   if (countActive()) resumeCount(state.drill.count)
   if (ui.tab === 'play' && ui.autoBet) scheduleAutoDeal()
+}
+
+// The first visit to a counting drill opens the Guide's counting chapter by itself, once per player.
+function showCountingIntro() {
+  if (ui.overlay) return
+  ui.countingIntro = true
+  rememberUi()
+  openGuide('counting')
 }
 
 // The first launch ends once chips are chosen or the default kept. Save now, even when the state equals a fresh
@@ -1099,7 +1111,7 @@ function trainScreen() {
     (mode) =>
       `<button role="tab" aria-selected="${drill.mode === mode}" data-do="drillMode" data-mode="${mode}" data-k="mode-${mode}">${t(`drill.${mode}`)}</button>`,
   )
-  const header = `<header class="bar train-bar"><div class="segmented" role="tablist">${tabs.join('')}</div><div class="stats">${trainStats(drill)}</div></header>`
+  const header = `<header class="bar train-bar"><div class="segmented" role="tablist">${tabs.join('')}</div><div class="train-help">${trainHelp(drill.mode)}</div><div class="stats">${trainStats(drill)}</div></header>`
   if (drill.mode === 'values') return header + valuesScreen(drill.values)
   if (drill.mode === 'count') return header + countScreen(drill.count)
   if (drill.empty) {
@@ -1136,6 +1148,14 @@ function trainStats(drill) {
     return stat(t('checks'), `${fmt(session.correct)}/${fmt(session.total)}`) + stat(t('accuracy'), pct(state.checkAccuracy))
   }
   return stat(t('streak'), state.streak) + stat(t('best'), Math.max(state.bestStreak, state.streak))
+}
+
+// Help one tap away: Rules and Chart in the strategy drills, Why & how in the counting ones.
+function trainHelp(mode) {
+  const button = (chapter, label) =>
+    `<button class="help-chip" data-do="guideOpen" data-chapter="${chapter}" data-k="help-${chapter}">${t(label)}</button>`
+  if (mode === 'values' || mode === 'count') return button('counting', 'whyHow')
+  return button('play', 'rulesButton') + button('strategy', 'chartButton')
 }
 
 function sprintClock(values) {
@@ -1321,11 +1341,15 @@ function trainHandHtml(round, hand, i) {
 }
 
 // The fixed felt slot: the last Decision's feedback (plus the result once the hand is over), else the prompt.
+// A looked-up hand says so, in the prompt and in every verdict.
 function trainMessage(round, feedback) {
   const result = round.phase === 'settled' ? ` · ${round.hands.map((hand) => t(`result.${hand.result}`)).join(' · ')}` : ''
-  if (feedback?.correct) return feltMessage('good', `✓ ${t('correct')}${result}`, t(`rule.${feedback.rule}`))
-  if (feedback) return feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}${result}`, t(`rule.${feedback.rule}`))
-  return feltMessage('', t('feltTrain'), t('feltTrainSub'))
+  const uncounted = feedback?.counted === false ? ` · ${t('notCounted')}` : ''
+  if (feedback?.correct) return feltMessage('good', `✓ ${t('correct')}${result}${uncounted}`, t(`rule.${feedback.rule}`))
+  if (feedback) {
+    return feltMessage('bad', `✗ ${t('coachMistake', { action: actionName(feedback.book) })}${result}${uncounted}`, t(`rule.${feedback.rule}`))
+  }
+  return feltMessage('', t('feltTrain'), round.hinted ? t('lookedUp') : t('feltTrainSub'))
 }
 
 // ------------------------------------------------------------------ Improve

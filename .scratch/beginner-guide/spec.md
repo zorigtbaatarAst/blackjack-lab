@@ -1,6 +1,6 @@
 # Spec: Beginner guide — tour, Guide, and help in Train
 
-Status: ready-for-agent
+Status: done
 
 Vocabulary follows `CONTEXT.md`, including **Guide**, **Tour** and **Looked up**. Builds on `.scratch/blackjack-lab/spec.md` (v1), `.scratch/train-full-hands/spec.md` and `.scratch/card-counting/spec.md`.
 

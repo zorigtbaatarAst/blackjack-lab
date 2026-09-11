@@ -372,13 +372,25 @@ button.wide {
   min-height: 32px;
   font-size: 13px;
 }
-/* Train: the tabs and the mode's two numbers. On a phone they take two rows in every mode, so switching
-   tabs never moves the table. */
+/* Train: the tabs, the help buttons and the mode's two numbers. Below 900px (a phone, or the 560px-wide app on
+   a tablet) the tabs take one row and help + numbers the next, in every mode, so switching tabs never moves
+   the table. */
 .train-bar .stats {
   display: flex;
   gap: 16px;
+  margin-left: auto;
 }
-@media (max-width: 600px) {
+.train-help {
+  display: flex;
+  gap: 6px;
+}
+.help-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+@media (max-width: 899px) {
   .train-bar {
     flex-wrap: wrap;
     row-gap: 6px;
@@ -391,10 +403,6 @@ button.wide {
     padding: 0 6px;
     font-size: 13px;
     white-space: nowrap;
-  }
-  .train-bar .stats {
-    flex: 1 1 100%;
-    justify-content: flex-end;
   }
 }
 

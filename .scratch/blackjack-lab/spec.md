@@ -15,6 +15,7 @@ Blackjack Lab is a free, solo Usion mini-app with three tabs:
 - **Play:** a realistic blackjack table using free Chips. It plays by one fixed rule set: 6 decks, dealer stands on soft 17, Blackjack pays 3:2, double after split, dealer Peeks. A Coach checks every Decision against the Book and flags Mistakes right after the Action. An optional Hint shows the Book action in advance.
 - **Train:** Drills that deal one Situation at a time, with no Chips. The default Weighted drill favours Soft totals, Pairs and Close calls. The Mistakes drill re-deals the player's Pending cells until they're fixed. Every answer gets instant feedback with a Rule of thumb.
   - Since sub-project 4, Train also teaches Hi-Lo card counting (the Values and Count drills): see `.scratch/card-counting/spec.md`.
+  - Since the beginner guide, Train has Rules, Chart and Why & how buttons into the Guide, and seeing the strategy chapter mid-hand marks the hand Looked up: see `.scratch/beginner-guide/spec.md`.
 - **Improve:** accuracy overall and by category, the recent Mistakes, Play results, a heat-map of the Strategy chart coloured by the player's accuracy, and the leaderboard. The leaderboard ranks the Best streak in the Weighted drill.
 
 The app opens straight onto the table, follows Usion's theme and language (English or Mongolian), and saves progress per user through Usion storage.
