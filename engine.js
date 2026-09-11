@@ -226,8 +226,9 @@ function isResumableHand(hand) {
     h.cards.length >= 2 &&
     h.cards.every(isCard) &&
     [h.fromSplit, h.splitAces, h.done].every((flag) => typeof flag === 'boolean')
-  const { dealer, hands, active } = hand ?? {}
+  const { dealer, hands, active, hinted } = hand ?? {}
   return (
+    (hinted === undefined || typeof hinted === 'boolean') &&
     Array.isArray(dealer) &&
     dealer.length === 2 &&
     dealer.every(isCard) &&
@@ -243,14 +244,14 @@ function isResumableHand(hand) {
   )
 }
 
-function resumedRound({ dealer, hands, active }) {
+function resumedRound({ dealer, hands, active, hinted = false }) {
   return {
     phase: 'player',
     dealer,
     hands: hands.map((hand) => ({ ...hand, bet: 0 })),
     active,
     bet: 0,
-    hinted: false,
+    hinted, // a looked-up hand stays looked up across a reload
     net: 0,
     allowed: [],
   }
@@ -307,7 +308,7 @@ function openWeightedHand(state) {
   const round = state.drill?.slots.weighted?.round
   if (round?.phase !== 'player') return null
   const hands = round.hands.map(({ cards, fromSplit, splitAces, done }) => ({ cards, fromSplit, splitAces, done }))
-  return { dealer: round.dealer, hands, active: round.active }
+  return { dealer: round.dealer, hands, active: round.active, hinted: round.hinted }
 }
 
 function invalid(reason) {
@@ -381,6 +382,14 @@ const HANDLERS = {
     if (s.hint && s.round?.phase === 'player') s.round.hinted = true
   },
 
+  // The Guide's strategy chapter shows Book actions: every Decision waiting now is Looked up, like a hinted one.
+  lookUp(s) {
+    const rounds = [s.round, ...Object.values(s.drill?.slots ?? {}).map((slot) => slot.round)]
+    for (const round of rounds) {
+      if (round?.phase === 'player') round.hinted = true
+    }
+  },
+
   resetStats(s) {
     s.stats = emptyStats()
     const mistakes = s.drill?.slots.mistakes
@@ -414,9 +423,11 @@ const HANDLERS = {
     if (round?.phase !== 'player') invalid('no Decision to answer')
     if (!round.allowed.includes(action)) invalid(`${action} is not allowed in this Situation`)
     const { mode } = s.drill
-    const { correct, book } = recordDecision(s, activeSituation(slot), action, mode)
-    slot.feedback = { correct, chosen: action, book: book.action, rule: book.rule }
-    if (mode === 'weighted') updateStreak(s, correct)
+    const situation = activeSituation(slot)
+    const counted = !round.hinted
+    const { correct, book } = counted ? recordDecision(s, situation, action, mode) : grade(situation, action)
+    slot.feedback = { correct, chosen: action, book: book.action, rule: book.rule, counted }
+    if (counted && mode === 'weighted') updateStreak(s, correct)
     // Right or wrong, the hand goes on with the move actually made.
     ACTIONS[action](s, slot, round.hands[round.active])
     if (advance(slot)) resolveRound(slot, s.rng)
@@ -525,9 +536,13 @@ function activeSituation(table) {
   return { cards: round.hands[round.active].cards, upcard: round.dealer[0], allowed: round.allowed }
 }
 
-function recordDecision(s, situation, chosen, source) {
+function grade(situation, chosen) {
   const book = bookAction(situation)
-  const correct = chosen === book.action
+  return { correct: chosen === book.action, book }
+}
+
+function recordDecision(s, situation, chosen, source) {
+  const { correct, book } = grade(situation, chosen)
   const cell = (s.stats.cells[book.cell] ??= { total: 0, correct: 0, pending: 0 })
   cell.total++
   if (correct) {

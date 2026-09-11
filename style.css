@@ -253,6 +253,18 @@ h2 {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
+.help-button {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-color: var(--gold-deep);
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 800;
+}
 
 /* ---------------------------------------------------------------- controls */
 
@@ -360,13 +372,25 @@ button.wide {
   min-height: 32px;
   font-size: 13px;
 }
-/* Train: the tabs and the mode's two numbers. On a phone they take two rows in every mode, so switching
-   tabs never moves the table. */
+/* Train: the tabs, the help buttons and the mode's two numbers. Below 900px (a phone, or the 560px-wide app on
+   a tablet) the tabs take one row and help + numbers the next, in every mode, so switching tabs never moves
+   the table. */
 .train-bar .stats {
   display: flex;
   gap: 16px;
+  margin-left: auto;
 }
-@media (max-width: 600px) {
+.train-help {
+  display: flex;
+  gap: 6px;
+}
+.help-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+@media (max-width: 899px) {
   .train-bar {
     flex-wrap: wrap;
     row-gap: 6px;
@@ -379,10 +403,6 @@ button.wide {
     padding: 0 6px;
     font-size: 13px;
     white-space: nowrap;
-  }
-  .train-bar .stats {
-    flex: 1 1 100%;
-    justify-content: flex-end;
   }
 }
 
@@ -1124,6 +1144,160 @@ button.wide {
   border-top: 4px solid var(--gold);
   border-radius: 16px 16px 0 0;
   background: var(--bg);
+}
+/* The Tour: a card with a small felt picture, dots, and Skip / Back / Next. */
+.tour-art {
+  --card-w: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 124px;
+  border-radius: 14px;
+  background: radial-gradient(120% 85% at 50% 30%, var(--felt) 0%, var(--felt-deep) 78%);
+}
+.tour-art .cards {
+  min-height: 0;
+}
+.tour-art .stack {
+  transform: scale(1.8);
+}
+.tour-art .hm-cell {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font-weight: 800;
+}
+.tour-check {
+  color: #7dffa9;
+  font-size: 44px;
+  font-weight: 800;
+}
+.tour-help {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border: 3px solid var(--gold);
+  border-radius: 50%;
+  color: var(--gold);
+  font-size: 34px;
+  font-weight: 800;
+}
+.tour-text {
+  margin: 0;
+}
+.tour-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+.tour-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.tour-dots .on {
+  background: var(--gold);
+}
+.tour-row {
+  display: flex;
+  gap: 8px;
+}
+.tour-row .primary {
+  margin-left: auto;
+}
+/* The Guide: a full-height sheet over the app; only its body scrolls. */
+.modal.guide {
+  height: 100dvh;
+  max-height: none;
+  max-width: 760px;
+  overflow: hidden;
+  gap: 0;
+  padding: 0;
+  border-radius: 0;
+}
+.guide-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+}
+.guide-top h2 {
+  margin: 0;
+}
+.guide-close {
+  width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 18px;
+}
+.guide-chapters {
+  display: flex;
+  gap: 6px;
+  padding: 0 16px 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+.guide-chapters button {
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.guide-chapters [aria-selected='true'] {
+  background: var(--gold);
+  border-color: var(--gold-deep);
+  color: var(--gold-ink);
+}
+.guide-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px calc(24px + env(safe-area-inset-bottom));
+  line-height: 1.5;
+}
+.guide-body h3 {
+  margin: 4px 0 8px;
+  font-size: 20px;
+}
+.guide-body h4 {
+  margin: 18px 0 6px;
+  font-size: 15px;
+}
+.guide-body p,
+.guide-body ul {
+  margin: 0 0 10px;
+}
+.guide-body ul {
+  padding-left: 20px;
+}
+.guide-body li {
+  margin-bottom: 4px;
+}
+.guide-cards {
+  --card-w: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 14px;
+}
+.guide-cards .cards {
+  flex: none;
+  min-height: 0;
+}
+.guide-cards figcaption {
+  color: var(--muted);
+  font-size: 13px;
+}
+.guide-body .heatmap {
+  margin-top: 8px;
 }
 
 .visually-hidden {
