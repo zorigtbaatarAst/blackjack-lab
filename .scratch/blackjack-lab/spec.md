@@ -284,11 +284,13 @@ Pairs:
   - Guests (user id starting `guest_`) never submit, which avoids the host's mid-drill login prompt. They see a "Log in to rank" note instead.
 - **Back button:** the host back claim is one-shot, so it's re-claimed on every screen change. Train and Improve go back to Play, and a card or dialog closes. Play releases the button so the host shows close.
 - **The "not a web page" reset:** viewport locked, no selection, no callout, no tap highlight, no double-tap zoom, no overscroll.
-- **Outside the Usion host** (plain browser, local development): if the SDK is missing or init doesn't fire within 3 s, the app boots with English, the system colour scheme, no persistence and no leaderboard. The timeout was 2 s; 3 s gives slow mobile hosts room, since timing out inside Usion means an unsaved session.
+- **Outside the Usion host** (plain browser, local development): if the SDK is missing or init doesn't fire within 8 s, the app boots with English, the system colour scheme, no persistence and no leaderboard. 8 s is the SDK's own recommendation: timing out inside Usion would mean an unsaved session without the player's profile.
 
 ### UI
 
 - **Style:** mobile-first portrait, full viewport, with the bottom tab bar Play | Train | Improve and one-thumb controls at the bottom. The look is flat and minimal black/white, per Usion's design guidance.
+- **Usion profile:** a header on every tab shows the player's Usion avatar and name (from init's `userName`/`userAvatar`, falling back to `Usion.user.getProfile()`), their Chips and Best streak. Guests see "Guest · Log in to rank"; outside Usion it reads "Preview". Only https avatars are shown; anything else falls back to the initial.
+- **Desktop:** cards size to the smaller of window width and height (46–112 px); from 900 px wide the column widens to 760 px. Keyboard: H/S/D/P for the Actions and drill answers, 1–4 for chips, Enter to deal or go to the next Situation, C to clear, R to rebet, Esc to close a dialog. Keys press the same buttons a tap would. Key hints and hover states show only on devices with a mouse.
 - **Cards:** drawn in CSS (rank plus suit glyph, red hearts and diamonds, a CSS card back). They carry spoken labels, animate with short deal and flip transitions, respect reduced motion, and have no sound.
 - **Play screen:** dealer Hand, player Hand(s) with the active Hand marked, Bankroll, Shoe cards left, chips/Clear/Rebet/Deal while betting, and the allowed Action buttons during the player's turn. It also has the Hint toggle, the Coach Mistake toast, per-Hand results and the Round net.
 - **Train screen:**

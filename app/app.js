@@ -18,7 +18,8 @@ const STORAGE_KEY = 'lab'
 const UI_KEY = 'ui'
 const TABS = ['play', 'train', 'improve']
 const ACTIONS = ['hit', 'stand', 'double', 'split']
-const INIT_TIMEOUT_MS = 3000
+const ACTION_KEYS = { hit: 'h', stand: 's', double: 'd', split: 'p' } // desktop shortcuts; Split is P, not S
+const INIT_TIMEOUT_MS = 8000 // the SDK's own recommendation; timing out inside Usion means an unsaved session
 const AUTO_ADVANCE_MS = 600
 const REVEAL_MS = 450
 const TOAST_MS = 2600
@@ -33,6 +34,7 @@ let usion = null // window.Usion once init fired; null outside the host
 let canRank = false // logged-in Usion user; Guests never submit
 let persist = false // stays false after a failed load, so real progress is never overwritten
 let lang = 'en'
+let profile = { name: null, avatar: null } // the player's Usion profile (name + avatar URL)
 let numberFormat = new Intl.NumberFormat('en', { maximumFractionDigits: 1 })
 let state = null
 
@@ -82,6 +84,7 @@ async function boot() {
   const userId = String(config?.userId ?? usion?.user?.getId?.() ?? '')
   if (usion && userId === '') console.warn('[lab] Usion gave no user id; treating this visitor as a Guest')
   canRank = usion !== null && userId !== '' && !userId.startsWith('guest_')
+  if (canRank) profile = await loadProfile(config)
 
   const loaded = await loadProgress()
   try {
@@ -93,8 +96,27 @@ async function boot() {
     state = newLab(null, { rng: Math.random })
   }
   lastSavedJson = JSON.stringify(snapshot(state))
+  // The profile header is built once so the avatar image isn't recreated on every render; #view re-renders.
+  app.innerHTML = `${profileHtml()}<div id="view"></div>`
   app.addEventListener('click', onClick)
+  document.addEventListener('keydown', onKey)
   switchTab(TABS.includes(loaded.tab) ? loaded.tab : 'play', { remember: false })
+}
+
+async function loadProfile(config) {
+  let name = config.userName ?? usion.user?.getName?.() ?? null
+  let avatar = config.userAvatar ?? usion.user?.getAvatar?.() ?? null
+  if (!name && typeof usion.user?.getProfile === 'function') {
+    try {
+      const fetched = await usion.user.getProfile()
+      name = fetched?.name ?? null
+      avatar = avatar ?? fetched?.avatar ?? null
+    } catch (err) {
+      console.warn('[lab] could not load the Usion profile; showing a generic one', err)
+    }
+  }
+  // Only https images: anything else (or a failed load) falls back to the initial.
+  return { name, avatar: typeof avatar === 'string' && avatar.startsWith('https://') ? avatar : null }
 }
 
 // Resolves with the host config, or null when the SDK is missing or init never fires (plain browser).
@@ -397,22 +419,82 @@ const actionName = (action) => t(`action.${action}`)
 
 function render() {
   if (!state) return
-  const main = app.querySelector('main')
+  const view = document.getElementById('view')
+  const main = view.querySelector('main')
   const scroll = main?.dataset.tab === ui.tab ? main.scrollTop : 0
   const focused = document.activeElement?.dataset?.k
   const screen = { play: playScreen, train: trainScreen, improve: improveScreen }[ui.tab]
   const inert = ui.overlay ? ' inert' : '' // a modal dialog keeps Tab and screen readers inside it
-  app.innerHTML = `
+  view.innerHTML = `
     ${noticeHtml()}
     <main class="screen screen-${ui.tab}" data-tab="${ui.tab}"${inert}>${screen()}</main>
     ${tabBarHtml(inert)}
     ${overlayHtml()}
     ${ui.toast ? `<div class="toast">${esc(ui.toast)}</div>` : ''}`
-  app.querySelector('main').scrollTop = scroll
-  if (focused) app.querySelector(`[data-k="${focused}"]`)?.focus()
-  const modal = app.querySelector('.modal')
+  view.querySelector('main').scrollTop = scroll
+  if (focused) view.querySelector(`[data-k="${focused}"]`)?.focus()
+  const modal = view.querySelector('.modal')
   if (modal && !modal.contains(document.activeElement)) modal.querySelector('button')?.focus()
+  updateProfile()
   syncBackButton()
+}
+
+// ------------------------------------------------------------------ profile header
+
+function profileHtml() {
+  let name = t('previewName')
+  if (usion) name = canRank ? (profile.name ?? t('player')) : t('guestName')
+  const initial = esc([...name][0]?.toUpperCase() ?? '?')
+  const photo = profile.avatar
+    ? `<img src="${esc(profile.avatar)}" alt="" referrerpolicy="no-referrer" draggable="false" onerror="this.remove()">`
+    : ''
+  return `<header class="profile">
+    <span class="avatar" aria-hidden="true">${initial}${photo}</span>
+    <span class="who"><strong>${esc(name)}</strong><small id="profile-note"></small></span>
+    <span class="purse"><span class="label">${t('chips')}</span><strong id="profile-chips"></strong></span>
+  </header>`
+}
+
+function updateProfile() {
+  const { round } = state
+  const revealing = round?.phase === 'settled' && ui.dealerShown < round.dealer.length
+  document.getElementById('profile-chips').textContent = fmt(revealing ? ui.bankrollShown : state.bankroll)
+  let note = t('previewNote')
+  if (usion) note = canRank ? t('bestShort', { n: Math.max(state.bestStreak, state.streak) }) : t('guestNote')
+  document.getElementById('profile-note').textContent = note
+}
+
+// ------------------------------------------------------------------ keyboard (desktop)
+
+// Keys press the same on-screen buttons a tap would, so keyboard and mouse can never disagree.
+function keyTargets(key) {
+  const action = ACTIONS.find((a) => ACTION_KEYS[a] === key)
+  if (action) return [`act-${action}`, `answer-${action}`]
+  if (key === 'enter' || key === ' ') return ['deal', 'next', 'back-to-drill']
+  const chip = { 1: 10, 2: 25, 3: 100, 4: 500 }[key]
+  if (chip) return [`chip-${chip}`]
+  if (key === 'c') return ['clear']
+  if (key === 'r') return ['rebet']
+  return []
+}
+
+function onKey(e) {
+  if (!state || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
+  const key = e.key.toLowerCase()
+  if (ui.overlay) {
+    if (key === 'escape') CLICKS.closeOverlay()
+    return
+  }
+  // Enter/Space on a focused button already clicks it natively; don't click a second thing.
+  if ((key === 'enter' || key === ' ') && e.target.closest?.('button')) return
+  for (const k of keyTargets(key)) {
+    const button = document.querySelector(`#view [data-k="${k}"]:not([disabled])`)
+    if (button) {
+      e.preventDefault()
+      button.click()
+      return
+    }
+  }
 }
 
 // The host back claim is one-shot: claim again whenever the screen that needs it changes.
@@ -473,7 +555,7 @@ function totalLabel(cards) {
 function actionButtons(doName, allowed, locked = false) {
   const buttons = ACTIONS.map((action) => {
     const enabled = allowed.includes(action) && !locked
-    return `<button data-do="${doName}" data-action="${action}" data-k="${doName}-${action}" ${enabled ? '' : 'disabled'}>${actionName(action)}</button>`
+    return `<button data-do="${doName}" data-action="${action}" data-k="${doName}-${action}" ${enabled ? '' : 'disabled'}>${actionName(action)}<kbd>${ACTION_KEYS[action].toUpperCase()}</kbd></button>`
   })
   return `<div class="actions">${buttons.join('')}</div>`
 }
@@ -495,7 +577,6 @@ function playScreen() {
   else if (revealing) controls = ''
   return `
     <header class="bar">
-      <div class="stat"><span class="label">${t('chips')}</span><strong>${fmt(revealing ? ui.bankrollShown : state.bankroll)}</strong></div>
       <div class="stat muted">${t('cardsLeft', { n: state.cardsLeft })}</div>
       <button class="toggle" data-do="hint" data-k="hint" aria-pressed="${state.hint}">${t('hint')}</button>
     </header>
@@ -556,8 +637,9 @@ function bettingHtml() {
     <div class="row">
       <button data-do="clearBet" data-k="clear" ${state.pendingBet > 0 ? '' : 'disabled'}>${t('clear')}</button>
       <button data-do="rebet" data-k="rebet" ${canRebet ? '' : 'disabled'}>${t('rebet')}</button>
-      <button class="primary" data-do="deal" data-k="deal" ${state.canDeal ? '' : 'disabled'}>${t('deal')}</button>
-    </div>`
+      <button class="primary" data-do="deal" data-k="deal" ${state.canDeal ? '' : 'disabled'}>${t('deal')}<kbd>↵</kbd></button>
+    </div>
+    <p class="keys muted small">${t('keysPlay')}</p>`
 }
 
 // ------------------------------------------------------------------ Train
@@ -588,7 +670,7 @@ function trainScreen() {
   else if (feedback) result = flagHtml('bad', t('coachMistake', { action: actionName(feedback.book) }), feedback.rule)
   const controls =
     feedback && !feedback.correct
-      ? `<button class="primary wide" data-do="next" data-k="next">${t('next')}</button>`
+      ? `<button class="primary wide" data-do="next" data-k="next">${t('next')}<kbd>↵</kbd></button>`
       : actionButtons('answer', situation.allowed, Boolean(feedback))
   return `${header}
     <section class="table">

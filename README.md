@@ -23,7 +23,7 @@ npm test                                              # Node 20+, zero dependenc
 python3 -m http.server 8765 --directory app           # then open http://127.0.0.1:8765
 ```
 
-Outside Usion the app runs in **preview mode**, with no saving and no leaderboard. Inside Usion it saves through `Usion.storage`.
+Outside Usion the app runs in **preview mode**, with no saving and no leaderboard. Inside Usion it saves through `Usion.storage`. On desktop: H/S/D/P act, 1–4 add chips, Enter deals or moves to the next Situation, C clears, R rebets, Esc closes dialogs.
 
 ## Deploy
 
